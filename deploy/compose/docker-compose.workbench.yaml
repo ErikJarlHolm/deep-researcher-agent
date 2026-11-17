@@ -1,0 +1,9 @@
+# Applied only by the root Workbench entry point.
+services:
+  deep-researcher-agent:
+    # Workbench supplies runtime variables; do not load a developer's .env.
+    env_file: !reset []
+
+  frontend:
+    environment:
+      - NVWB_TRIM_PREFIX=true

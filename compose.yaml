@@ -1,0 +1,6 @@
+# Workbench entry point: reuse the application stack and local-model overlay.
+include:
+  - path:
+      - deploy/compose/docker-compose.yaml
+      - deploy/compose/docker-compose.onprem.yaml
+      - deploy/compose/docker-compose.workbench.yaml

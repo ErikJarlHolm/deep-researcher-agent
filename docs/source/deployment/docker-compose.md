@@ -20,8 +20,10 @@ The Docker Compose setup uses these files:
 
 | File | Purpose |
 |------|---------|
+| `compose.yaml` | Workbench entry point for the on-prem stack |
 | `deploy/compose/docker-compose.yaml` | Standard stack (LlamaIndex or FRAG backend) |
 | `deploy/compose/docker-compose.onprem.yaml` | Optional DGX Spark / GB10 model-serving overlay |
+| `deploy/compose/docker-compose.workbench.yaml` | Workbench-only settings: no backend `.env` loading and frontend proxy support |
 | `deploy/.env` | Environment variables for all services |
 | `deploy/.env.example` | Template with all available variables |
 | `deploy/compose/init-db.sql` | PostgreSQL initialization script |
@@ -216,6 +218,46 @@ test step; it does not complete the planned migration away from NeMo Agent
 Toolkit. Stop other GPU model services on the DGX Spark before testing so the
 models do not compete for its unified memory.
 
+#### AI Workbench with a managed secret
+
+The committed `.project/spec.yaml` selects the root `compose.yaml`, which merges
+the standard stack with the on-prem and Workbench overlays. Use Docker Compose
+2.24.4 or newer for `include` and `!reset` support.
+
+1. In **Project Container > Environment Variables**, configure `NGC_API_KEY`
+   as **Sensitive**, then restart the project container. Workbench stores only
+   the variable name and description in Git, not the value.
+2. Configure **Settings > Integrations > NGC** to authenticate container-image
+   pulls. This is separate from the project secret used by the embedding NIM
+   to download model artifacts. The key must permit the required NGC Catalog
+   and Private Registry resources.
+3. Stop other GPU model services before starting this stack.
+4. Open **Environment > Compose** and use **Start**. Workbench passes its
+   sensitive variables to Compose for interpolation and displays service logs.
+   The frontend enables Workbench proxy access.
+
+This path does not require `deploy/.env`; the Workbench overlay disables the
+backend's environment-file loading. Leave the key out of `.env` and
+`variables.env`. Optional tuning values from this page must instead be added
+as Workbench environment variables. Both model services explicitly share GPU 0;
+the Workbench project container requests no GPU.
+
+A project secret is not exported into an unrelated SSH session. Use Workbench's
+Compose controls, not the Docker tasks below, when relying on a Workbench
+secret. Do not mount the host Docker socket into the project container.
+Never share resolved Compose output or `docker inspect` output: the NIM receives
+the key as a runtime environment variable even though Workbench keeps its value
+out of Git.
+
+For Workbench setup details, see NVIDIA's
+[runtime settings](https://docs.nvidia.com/ai-workbench/how-to/environments/runtime-configuration)
+and [multi-container guide](https://docs.nvidia.com/ai-workbench/how-to/environments/multi-container).
+
+#### Standalone Docker Compose
+
+The following commands are for a host terminal outside the Workbench-managed
+Compose environment.
+
 1. Add an NGC API key to `deploy/.env` as `NGC_API_KEY`, then log in to NGC
    without printing the key:
 
@@ -248,7 +290,7 @@ or workload testing shows that adjustment is needed.
 
 ### VS Code tasks
 
-When the repository is open as a VS Code workspace in Workbench, use
+When the repository is open as a VS Code workspace on a Docker-enabled host, use
 **Terminal > Run Task...** or `Ctrl+Shift+P` → **Tasks: Run Task** to select an
 on-prem task. **On-prem: Start** validates the application config and Compose
 files before starting the stack. **On-prem: Follow model logs** streams Qwen and
@@ -258,6 +300,9 @@ containers and network while keeping the model and document volumes.
 The tasks require `uv`, Docker Compose, and `deploy/.env` with `NGC_API_KEY` set.
 Compose validation uses `config --quiet` so it does not print the resolved
 configuration, which includes the NGC key.
+These are standalone host tasks, not Workbench project-container tasks. A VS
+Code terminal attached through Workbench runs inside the project container;
+use Workbench's Compose controls for that setup instead.
 
 ### Use Pre-Built NGC Images
 

@@ -46,7 +46,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["0"]
               capabilities:
                 - gpu
     restart: unless-stopped
@@ -57,7 +57,7 @@ services:
       NIM_ENGINE_MODEL_NAME: nvidia/Nemotron-3.5-Embed-1B-BF16
       NIM_ENGINE_PRECISION: fp16
       NIM_ENGINE_MODEL_DOWNLOAD_PROVIDER: ngc
-      NGC_API_KEY: ${NGC_API_KEY:?Set NGC_API_KEY in deploy/.env}
+      NGC_API_KEY: ${NGC_API_KEY:?Set NGC_API_KEY as a Workbench Secret or in the Compose environment}
     volumes:
       - nim-embed-cache:/opt/cache
       - nim-embed-weights:/model
@@ -70,7 +70,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["0"]
               capabilities:
                 - gpu
     restart: unless-stopped
