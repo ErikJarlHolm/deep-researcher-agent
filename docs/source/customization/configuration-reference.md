@@ -873,9 +873,9 @@ workflow:
 
 ## Provided Config Files
 
-The repository includes fourteen top-level workflow configurations. They are focused reference profiles, not cumulative
-layers, and no single profile enables every capability. Start from the profile closest to the deployment and merge
-only the additional sections you need.
+The repository includes focused top-level workflow profiles, not cumulative
+layers, and no single profile enables every capability. Start from the profile
+closest to the deployment and merge only the additional sections you need.
 
 | File | Mode | Enabled behavior and opt-ins |
 |------|------|------------------------------|
@@ -884,6 +884,7 @@ only the additional sections you need.
 | `configs/config_cli_data_science_fdabench_lite.yml` | Direct DS Agent evaluation | Headless FDABench-Lite DS ReAct profile with GSF, Foundational RAG, Tavily, choice-label output, and request-local GSF budgets. |
 | `configs/config_cli_data_science_fdabench_lite_python.yml` | Direct DS Agent evaluation | Same FDABench-Lite profile plus blocked-network, stateless OpenShell scientific Python execution and an exact GSF-result bridge. |
 | `configs/config_web_default_llamaindex.yml` | Web API | Default chat pipeline with LlamaIndex/ChromaDB knowledge retrieval and Tavily. Paper search is commented out. |
+| `configs/config_web_onprem_documents.yml` | On-prem Web API | Local Qwen3.5 research with a local NeMo Retriever embedding NIM and only the internal-document source. Used by the DGX Spark Compose overlay. |
 | `configs/config_web_azure_ai_search.yml` | Web API | Azure AI Search knowledge retrieval and web search |
 | `configs/config_web_frag.yml` | Web API / Helm base | Foundational RAG plus Tavily. Requires separately deployed RAG query and ingestion services. Paper search is commented out. |
 | `configs/config_web_opensearch.yml` | Web API | Built-in OpenSearch knowledge backend plus Tavily. Supports unauthenticated or basic self-hosted OpenSearch and SigV4 (`es` or `aoss`); infrastructure and credentials are deployment opt-ins. |

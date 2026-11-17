@@ -16,7 +16,9 @@ This guide walks through setting up the Deep Researcher Agent blueprint for loca
 | Git | 2.x+ | |
 | Node.js | 22+ | Optional -- only needed for the web UI |
 
-You also need at least one LLM API key. Refer to [API key setup](#api-key-setup) below.
+Hosted-model profiles require an LLM API key; the on-premises profile serves models locally and does not
+need a hosted LLM key. The DGX Spark Compose setup does require an NGC API key to pull the embedding NIM;
+see [Docker Compose](../deployment/docker-compose.md#dgx-spark--gb10-with-local-models).
 
 
 ### Hardware Requirements

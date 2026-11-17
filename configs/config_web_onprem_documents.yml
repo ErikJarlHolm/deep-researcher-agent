@@ -1,0 +1,98 @@
+# On-premises document-research profile.
+# All model calls target services on the Compose network; no web-search tools are registered.
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+
+  front_end:
+    _type: deep_researcher_api
+    runner_class: deep_researcher_api.plugin.DeepResearcherAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+llms:
+  local_research_llm:
+    _type: openai
+    model_name: Qwen/Qwen3.5-35B-A3B
+    base_url: http://qwen:8000/v1
+    api_key: local
+    temperature: 0.2
+    max_tokens: 8192
+    num_retries: 3
+    parallel_tool_calls: false
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: knowledge_layer
+        name: "Internal Documents"
+        description: "Search documents uploaded to this Deep Researcher Agent."
+        tools:
+          - knowledge_search
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: llamaindex
+    collection_name: ${COLLECTION_NAME:-internal-documents}
+    generate_summary: false
+    top_k: 5
+    chroma_dir: ${DEEP_RESEARCHER_CHROMA_DIR:-/app/data/chroma_data}
+    embed_model: nvidia/Nemotron-3.5-Embed-1B-BF16
+    embed_base_url: http://embedder:8000/v1
+
+  intent_classifier:
+    _type: intent_classifier
+    llm: local_research_llm
+
+  clarifier_agent:
+    _type: clarifier_agent
+    llm: local_research_llm
+    max_turns: 3
+    log_response_max_chars: 2000
+
+  shallow_research_agent:
+    _type: shallow_research_agent
+    llm: local_research_llm
+    max_llm_turns: 10
+    max_tool_iterations: 5
+
+  deep_research_agent:
+    _type: deep_research_agent
+    enable_citation_verification: true
+    enable_source_router: false
+    orchestrator_llm: local_research_llm
+    researcher_llm: local_research_llm
+    planner_llm: local_research_llm
+    writer_llm: local_research_llm
+
+workflow:
+  _type: chat_deepresearcher_agent
+  enable_escalation: true
+  enable_clarifier: true
+  use_async_deep_research: true
+  checkpoint_db: ${DEEP_RESEARCHER_CHECKPOINT_DB:-./checkpoints.db}
+  relay:
+    observability:
+      atof:
+        enabled: true
+        output_directory: ./relay
+        filename: deep-researcher-relay.atof.jsonl
+        mode: append

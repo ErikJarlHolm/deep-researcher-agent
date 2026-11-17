@@ -21,6 +21,7 @@ The Docker Compose setup uses these files:
 | File | Purpose |
 |------|---------|
 | `deploy/compose/docker-compose.yaml` | Standard stack (LlamaIndex or FRAG backend) |
+| `deploy/compose/docker-compose.onprem.yaml` | Optional DGX Spark / GB10 model-serving overlay |
 | `deploy/.env` | Environment variables for all services |
 | `deploy/.env.example` | Template with all available variables |
 | `deploy/compose/init-db.sql` | PostgreSQL initialization script |
@@ -37,11 +38,12 @@ cp deploy/.env.example deploy/.env
 
 The sections below explain each group of variables.
 
-### API keys (required)
+### API keys
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NVIDIA_API_KEY` | Yes | NVIDIA API key for NIM model access. |
+| `NVIDIA_API_KEY` | Hosted profiles only | NVIDIA API key for hosted NIM inference. The on-prem profile does not use it. |
+| `NGC_API_KEY` | On-prem overlay | NGC API key for pulling the embedding NIM and model artifacts. |
 | `TAVILY_API_KEY` | Conditional | Web search provider key (required if using `tavily_web_search`). |
 | `EXA_API_KEY` | Conditional | Web search provider key (required if using `exa_web_search`). |
 | `NIMBLE_API_KEY` | Conditional | Web search provider key (required if using `nimble_web_search`). |
@@ -69,6 +71,7 @@ Set `BACKEND_CONFIG` to select which workflow config the backend loads at startu
 | Config path | Description |
 |-------------|-------------|
 | `/app/configs/config_web_default_llamaindex.yml` | Default -- LlamaIndex backend (no external RAG required). |
+| `/app/configs/config_web_onprem_documents.yml` | On-premises, document-only profile used by the DGX Spark overlay. |
 | `/app/configs/config_web_frag.yml` | Foundational RAG mode (requires a running RAG Blueprint). |
 
 Example in `deploy/.env`:
@@ -194,6 +197,54 @@ This starts three services:
 | `postgres` | `deep-researcher-postgres` | 5432 | PostgreSQL database |
 
 Open [http://localhost:3000](http://localhost:3000) to access the web UI.
+
+### DGX Spark / GB10 with local models
+
+The on-prem overlay adds a Qwen3.5-35B-A3B vLLM service and a NeMo Retriever
+Nemotron 3.5 Embed NIM. The local profile registers only the internal-document
+source; it does not configure web or paper search. Model services are reachable
+only on the Compose network and are not published on host ports.
+
+The first profile uses Nemotron 3.5 Embed rather than BGE-M3 because the current
+LlamaIndex adapter uses NVIDIA's embeddings client, and this embedding NIM is
+[validated for DGX Spark / GB10](https://docs.nvidia.com/nim/nemo-retriever/embedding/latest/support-matrix.html).
+BGE-M3 remains a candidate for a later comparison once a compatible local
+serving path is validated.
+
+This profile uses the current workflow-config runtime and is an initial on-prem
+test step; it does not complete the planned migration away from NeMo Agent
+Toolkit. Stop other GPU model services on the DGX Spark before testing so the
+models do not compete for its unified memory.
+
+1. Add an NGC API key to `deploy/.env` as `NGC_API_KEY`, then log in to NGC
+   without printing the key:
+
+   ```bash
+   NGC_API_KEY="$(sed -n 's/^NGC_API_KEY=//p' deploy/.env | tail -n 1)"
+   test -n "$NGC_API_KEY" || { echo "NGC_API_KEY is empty" >&2; exit 1; }
+   printf '%s' "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin
+   unset NGC_API_KEY
+   ```
+
+2. From `deploy/compose`, validate and start the overlay:
+
+   ```bash
+   docker compose --env-file ../.env -f docker-compose.yaml -f docker-compose.onprem.yaml config
+   docker compose --env-file ../.env -f docker-compose.yaml -f docker-compose.onprem.yaml up -d --build
+   ```
+
+3. Follow model startup and download progress:
+
+   ```bash
+   docker compose --env-file ../.env -f docker-compose.yaml -f docker-compose.onprem.yaml logs -f qwen embedder
+   ```
+
+The first startup downloads Qwen weights from Hugging Face and embedding NIM
+artifacts from NGC. The vLLM service defaults to a 32K context, two concurrent
+sequences, and 68% GPU-memory utilization to leave headroom for the embedding
+NIM and the application. Tune `DEEP_RESEARCHER_VLLM_MAX_MODEL_LEN` or
+`DEEP_RESEARCHER_VLLM_GPU_MEMORY_UTILIZATION` in `deploy/.env` only if startup
+or workload testing shows that adjustment is needed.
 
 ### Use Pre-Built NGC Images
 
