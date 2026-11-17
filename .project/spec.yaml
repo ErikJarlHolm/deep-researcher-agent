@@ -1,7 +1,7 @@
 specVersion: v2
 specMinorVersion: 2
 meta:
-    name: ErikJarlHolm-deep-researcher-agent
+    name: erikjarlholm-deep-researcher-agent
     image: project-erikjarlholm-deep-researcher-agent
     description: ""
     labels: []

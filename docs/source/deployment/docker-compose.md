@@ -224,6 +224,16 @@ The committed `.project/spec.yaml` selects the root `compose.yaml`, which merges
 the standard stack with the on-prem and Workbench overlays. Use Docker Compose
 2.24.4 or newer for `include` and `!reset` support.
 
+Workbench passes `meta.name` from `.project/spec.yaml` as the Compose project
+name, so it must contain only lowercase letters, digits, hyphens, and
+underscores, starting with a letter or digit. A top-level Compose `name` does
+not override an explicitly supplied project name. If updating an existing
+clone from a mixed-case name, stop the project container before pulling the
+change from a host terminal, then close and reopen the project in Workbench.
+Do not rename the repository directory or edit Workbench's runtime folders.
+Workbench may prompt you to configure the sensitive variable again after a
+project-name change; its value is not part of the Git update.
+
 1. In **Project Container > Environment Variables**, configure `NGC_API_KEY`
    as **Sensitive**, then restart the project container. Workbench stores only
    the variable name and description in Git, not the value.
