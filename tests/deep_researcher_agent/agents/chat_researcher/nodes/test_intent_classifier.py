@@ -427,10 +427,15 @@ class TestIntentClassifier:
         await classifier.run(state)
 
         classifier_messages = mock_llm.ainvoke.call_args.args[0]
-        assert classifier_messages == [classifier_messages[0]]
+        assert len(classifier_messages) == 2
         assert isinstance(classifier_messages[0], SystemMessage)
+        assert isinstance(classifier_messages[1], HumanMessage)
+        assert classifier_messages[1].content == state.messages[-1].content
         assert "can you rewrite the report to add more information on benchmarks" in classifier_messages[0].content
-        assert "Previous report body with benchmark sections and citations" not in classifier_messages[0].content
+        assert all(
+            "Previous report body with benchmark sections and citations" not in message.content
+            for message in classifier_messages
+        )
 
     @pytest.mark.asyncio
     async def test_run_meta_in_longer_response(self, mock_llm):
@@ -507,8 +512,10 @@ class TestIntentClassifier:
 
         assert mock_llm.ainvoke.call_count == 2
         repair_messages = mock_llm.ainvoke.call_args_list[1].args[0]
-        assert len(repair_messages) == 1
+        assert len(repair_messages) == 2
         assert isinstance(repair_messages[0], SystemMessage)
+        assert isinstance(repair_messages[1], HumanMessage)
+        assert repair_messages[1].content == state.messages[-1].content
         assert "Return only one valid JSON object" in repair_messages[0].content
         assert "I should rewrite the report instead of returning JSON." in repair_messages[0].content
         assert result["user_intent"].target == "new_research"

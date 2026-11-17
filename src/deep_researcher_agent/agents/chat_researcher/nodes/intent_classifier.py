@@ -25,6 +25,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.messages import BaseMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 
 from deep_researcher_agent.common import extract_json
@@ -148,7 +149,7 @@ class IntentClassifier:
         )
         # Keep the router isolated from prior assistant report bodies. The prompt already contains
         # the latest query and report availability, which is the bounded context needed here.
-        messages: list[BaseMessage] = [SystemMessage(content=system_content)]
+        messages: list[BaseMessage] = [SystemMessage(content=system_content), HumanMessage(content=query)]
 
         try:
             # This model call crosses the NAT function boundary, so it does not
@@ -163,6 +164,7 @@ class IntentClassifier:
             if not parsed or not isinstance(parsed, dict):
                 parsed = await self._repair_json_response(
                     system_content=system_content,
+                    query=query,
                     invalid_response=response_text,
                     callbacks=self.callbacks,
                 )
@@ -254,6 +256,7 @@ class IntentClassifier:
         self,
         *,
         system_content: str,
+        query: str,
         invalid_response: str,
         callbacks: list[Any],
     ) -> dict[str, Any] | None:
@@ -268,7 +271,7 @@ class IntentClassifier:
             response = await asyncio.wait_for(
                 ainvoke_with_relay(
                     self.llm,
-                    [SystemMessage(content=repair_prompt)],
+                    [SystemMessage(content=repair_prompt), HumanMessage(content=query)],
                     callbacks=callbacks,
                 ),
                 timeout=min(self.llm_timeout, _REPAIR_TIMEOUT_SECONDS),

@@ -71,6 +71,11 @@ prompts/researcher.j2  (Jinja2 source)
   SystemMessage(content=...)  (sent to LLM)
 ```
 
+Intent classification sends the rendered system prompt alongside a user message
+containing only the latest query. JSON repair uses the same user query. Prior
+assistant report bodies are excluded from both calls. Keeping an explicit user
+message supports chat templates, including Qwen3.5, that reject system-only input.
+
 ### `load_prompt(path, name)`
 
 Loads a raw template file from the agent's `prompts/` directory. Automatically appends `.j2` if the file is not found by exact name.
