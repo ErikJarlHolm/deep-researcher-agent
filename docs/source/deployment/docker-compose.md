@@ -229,7 +229,7 @@ models do not compete for its unified memory.
 2. From `deploy/compose`, validate and start the overlay:
 
    ```bash
-   docker compose --env-file ../.env -f docker-compose.yaml -f docker-compose.onprem.yaml config
+   docker compose --env-file ../.env -f docker-compose.yaml -f docker-compose.onprem.yaml config --quiet
    docker compose --env-file ../.env -f docker-compose.yaml -f docker-compose.onprem.yaml up -d --build
    ```
 
@@ -245,6 +245,19 @@ sequences, and 68% GPU-memory utilization to leave headroom for the embedding
 NIM and the application. Tune `DEEP_RESEARCHER_VLLM_MAX_MODEL_LEN` or
 `DEEP_RESEARCHER_VLLM_GPU_MEMORY_UTILIZATION` in `deploy/.env` only if startup
 or workload testing shows that adjustment is needed.
+
+### VS Code tasks
+
+When the repository is open as a VS Code workspace in Workbench, use
+**Terminal > Run Task...** or `Ctrl+Shift+P` → **Tasks: Run Task** to select an
+on-prem task. **On-prem: Start** validates the application config and Compose
+files before starting the stack. **On-prem: Follow model logs** streams Qwen and
+embedding-NIM logs until you stop the task; **On-prem: Stop** tears down the
+containers and network while keeping the model and document volumes.
+
+The tasks require `uv`, Docker Compose, and `deploy/.env` with `NGC_API_KEY` set.
+Compose validation uses `config --quiet` so it does not print the resolved
+configuration, which includes the NGC key.
 
 ### Use Pre-Built NGC Images
 

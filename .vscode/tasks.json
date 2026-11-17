@@ -1,0 +1,107 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "On-prem: Validate application config",
+      "type": "process",
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        ".agents/skills/deep-researcher-configure-workflow/scripts/validate_config.py",
+        "configs/config_web_onprem_documents.yml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "On-prem: Validate Compose",
+      "type": "process",
+      "command": "docker",
+      "args": [
+        "compose",
+        "--env-file",
+        "deploy/.env",
+        "-f",
+        "deploy/compose/docker-compose.yaml",
+        "-f",
+        "deploy/compose/docker-compose.onprem.yaml",
+        "config",
+        "--quiet"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "On-prem: Start",
+      "type": "process",
+      "command": "docker",
+      "args": [
+        "compose",
+        "--env-file",
+        "deploy/.env",
+        "-f",
+        "deploy/compose/docker-compose.yaml",
+        "-f",
+        "deploy/compose/docker-compose.onprem.yaml",
+        "up",
+        "-d",
+        "--build"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": [
+        "On-prem: Validate application config",
+        "On-prem: Validate Compose"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "On-prem: Follow model logs",
+      "type": "process",
+      "command": "docker",
+      "args": [
+        "compose",
+        "--env-file",
+        "deploy/.env",
+        "-f",
+        "deploy/compose/docker-compose.yaml",
+        "-f",
+        "deploy/compose/docker-compose.onprem.yaml",
+        "logs",
+        "-f",
+        "qwen",
+        "embedder"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "On-prem: Stop",
+      "type": "process",
+      "command": "docker",
+      "args": [
+        "compose",
+        "--env-file",
+        "deploy/.env",
+        "-f",
+        "deploy/compose/docker-compose.yaml",
+        "-f",
+        "deploy/compose/docker-compose.onprem.yaml",
+        "down"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
