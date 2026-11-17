@@ -8,6 +8,8 @@ services:
     environment:
       - CONFIG_FILE=/app/configs/config_web_onprem_documents.yml
       - NVIDIA_API_KEY=
+      # The OpenAI-compatible embedding client requires a nonempty placeholder.
+      - DEEP_RESEARCHER_EMBED_API_KEY=local
 
   qwen:
     image: ${DEEP_RESEARCHER_VLLM_IMAGE:-vllm/vllm-openai:cu130-nightly}

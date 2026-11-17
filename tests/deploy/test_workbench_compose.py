@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from openai import OpenAI
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -58,3 +59,13 @@ def test_workbench_can_load_compose_using_its_project_name(ngc_api_key: str | No
         project = json.loads(result.stdout)
         assert project["name"] == spec["meta"]["name"]
         assert project["services"]["embedder"]["environment"]["NGC_API_KEY"] == ngc_api_key
+        backend_env = project["services"]["deep-researcher-agent"]["environment"]
+        profile = yaml.safe_load(
+            (REPO_ROOT / "configs" / "config_web_onprem_documents.yml").read_text(encoding="utf-8")
+        )
+        knowledge_config = profile["functions"]["knowledge_search"]
+        with OpenAI(
+            base_url=knowledge_config["embed_base_url"],
+            api_key=backend_env.get("DEEP_RESEARCHER_EMBED_API_KEY") or backend_env.get("NVIDIA_API_KEY", ""),
+        ) as client:
+            assert client.base_url.host == "embedder"

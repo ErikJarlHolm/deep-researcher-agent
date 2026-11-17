@@ -384,6 +384,8 @@ def _setup_backend(config: KnowledgeRetrievalConfig, summary_llm_obj=None) -> tu
         os.environ.setdefault("DEEP_RESEARCHER_CHROMA_DIR", config.chroma_dir)
         backend_config = {
             "persist_dir": config.chroma_dir,
+            "embed_model": config.embed_model,
+            "embed_base_url": config.embed_base_url,
             **summary_config,
         }
 

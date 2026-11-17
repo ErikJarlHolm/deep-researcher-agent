@@ -206,6 +206,14 @@ functions:
     chroma_dir: /tmp/chroma_data    # ChromaDB persistence directory
 ```
 
+For a local embedding server, set `embed_model` and `embed_base_url` under
+`knowledge_search`; these settings apply to both document ingestion and retrieval.
+Their defaults come from `DEEP_RESEARCHER_EMBED_MODEL` and
+`DEEP_RESEARCHER_EMBED_BASE_URL`. Set `DEEP_RESEARCHER_EMBED_API_KEY` to the server's
+key, or to a nonempty placeholder such as `local` if the server does not require
+authentication. The OpenAI-compatible client still requires a nonempty value;
+this does not require an OpenAI account or a hosted API key.
+
 **Foundational RAG (Hosted Server)**
 ```yaml
 functions:

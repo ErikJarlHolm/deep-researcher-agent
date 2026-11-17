@@ -206,6 +206,9 @@ The on-prem overlay adds a Qwen3.5-35B-A3B vLLM service and a NeMo Retriever
 Nemotron 3.5 Embed NIM. The local profile registers only the internal-document
 source; it does not configure web or paper search. Model services are reachable
 only on the Compose network and are not published on host ports.
+The backend uses `DEEP_RESEARCHER_EMBED_API_KEY=local` as the non-secret placeholder
+required by the embedding client's OpenAI-compatible protocol. Do not configure
+an OpenAI key to resolve a local embedding client's "Missing credentials" error.
 
 The first profile uses Nemotron 3.5 Embed rather than BGE-M3 because the current
 LlamaIndex adapter uses NVIDIA's embeddings client, and this embedding NIM is
@@ -244,7 +247,21 @@ project-name change; its value is not part of the Git update.
 3. Stop other GPU model services before starting this stack.
 4. Open **Environment > Compose** and use **Start**. Workbench passes its
    sensitive variables to Compose for interpolation and displays service logs.
-   The frontend enables Workbench proxy access.
+
+The current frontend expects to be served at the URL root. Workbench's
+path-prefixed frontend link can display unstyled HTML and fail to load the
+client scripts and API routes, even with prefix trimming enabled. For a remote
+DGX Spark, open an SSH tunnel from a terminal on the computer running your
+browser, replacing the SSH port, user, and host:
+
+```bash
+ssh -p SSH_PORT -N -o ExitOnForwardFailure=yes -L 127.0.0.1:3300:127.0.0.1:3000 YOUR_USER@YOUR_DGX_HOST
+```
+
+Keep the terminal open and use `http://127.0.0.1:3300`. Use port 22 unless your
+SSH server uses a different port. This forwards the frontend's default host
+port 3000; adjust the destination port if you changed `FRONTEND_PORT`. No model
+ports need to be published.
 
 This path does not require `deploy/.env`; the Workbench overlay disables the
 backend's environment-file loading. Leave the key out of `.env` and
