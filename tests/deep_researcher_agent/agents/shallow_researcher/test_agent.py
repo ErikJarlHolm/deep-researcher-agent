@@ -313,6 +313,31 @@ class TestShallowResearcherAgent:
         assert "- [1] mcp_time__get_current_time" in agent.system_prompt
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_tools", [True, False])
+    async def test_evidence_boundary_is_rendered_only_for_research(
+        self, mock_llm_provider, mock_llm, real_tool, with_tools
+    ):
+        """Grounding instructions reach research calls without constraining tool-free chat."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="The sources do not establish an answer."))
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[real_tool] if with_tools else [],
+            max_tool_iterations=1,
+        )
+
+        await agent.run(
+            ShallowResearchAgentState(
+                messages=[HumanMessage(content="What does the supplied material establish?")],
+                tool_iterations=1,
+            )
+        )
+
+        system_message = mock_llm.ainvoke.await_args.args[0][0]
+        assert isinstance(system_message, SystemMessage)
+        assert ("## Evidence Boundary (STRICT)" in system_message.content) is with_tools
+        assert "**References:**" in system_message.content
+
+    @pytest.mark.asyncio
     async def test_citation_repair_timeout_fails_closed(self, mock_llm_provider, mock_llm):
         """A stalled provider cannot extend a completed shallow run indefinitely."""
 

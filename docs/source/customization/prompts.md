@@ -132,6 +132,18 @@ Python rejects a catalog question that is not a verbatim span of that request.
 | `tools` | `list[dict]` | Available tools (each has `name` and `description` keys) |
 | `available_documents` | `list[dict]` or `None` | Uploaded documents with `file_name` and `summary` keys |
 
+When research tools are available, the default shallow-research prompt limits factual
+answers to returned tool content within the requested source scope. It instructs the
+agent to distinguish partial evidence and supported inferences, preserve source
+qualifications, and acknowledge missing information without adding facts from memory
+or citing irrelevant results. This applies across document topics and source types;
+it does not alter tool-free chat.
+
+These are model instructions, not a deterministic claim-verification guarantee.
+Citation verification checks source identities and reference integrity; it does not
+by itself establish that a passage supports every claim. Validate grounding changes
+with both answerable and unanswerable questions, not just citation-format tests.
+
 ### Data Science Agent
 
 | Variable | Type | Description |
