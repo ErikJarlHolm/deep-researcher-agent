@@ -42,7 +42,7 @@ unanswerable questions, so a case's expected sources are not retrieval hints.
 
 Each question gets a fresh collection and conversation, preventing earlier answers
 from contaminating later tests. Successful cases delete only their own temporary
-collection. Terminal model-service failures are recorded as errors and the next
+collection. Terminal model-service and deep-job failures are recorded as errors and the next
 question runs; protocol, ingestion, connection, and interaction failures stop the
 run. Failed cases preserve their collections for diagnosis; existing user
 collections are not deleted. Deep-research escalations are polled until their

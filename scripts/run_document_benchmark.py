@@ -188,8 +188,10 @@ class BenchmarkClient:
                 if job["status"] == "success":
                     report = self.request("GET", f"{path}/report", deadline=deadline)
                     if not report.get("has_report") or not report.get("report"):
-                        raise RuntimeError(f"Job {job_id} succeeded without a report")
+                        raise WorkflowFailed(f"Job {job_id} succeeded without a report")
                     return report["report"]
+                if job["status"] == "failure":
+                    raise WorkflowFailed(f"Research job failed: {job.get('error')}")
                 if job["status"] not in ("submitted", "running"):
                     raise RuntimeError(f"Research job did not succeed: {json.dumps(job, ensure_ascii=False)}")
                 time.sleep(min(2, remaining(deadline)))

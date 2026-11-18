@@ -177,6 +177,18 @@ def test_deep_timeout_cancels_the_job_and_is_not_an_answer(monkeypatch) -> None:
     request.assert_called_once_with("POST", "/api/jobs/async/job/job_123/cancel")
 
 
+def test_failed_deep_job_is_a_terminal_workflow_failure(monkeypatch) -> None:
+    client = benchmark.BenchmarkClient("http://127.0.0.1:3300")
+    request = MagicMock(return_value={"status": "failure", "error": "job failed (RuntimeError)"})
+    monkeypatch.setattr(client, "request", request)
+    try:
+        with pytest.raises(benchmark.WorkflowFailed, match="job failed"):
+            client.wait_report("job_123", float("inf"))
+    finally:
+        client.http.close()
+    request.assert_called_once_with("GET", "/api/jobs/async/job/job_123", deadline=float("inf"))
+
+
 def test_unconfirmed_job_cancellation_stops_instead_of_starting_more_work(monkeypatch) -> None:
     client = benchmark.BenchmarkClient("http://127.0.0.1:3300")
     monkeypatch.setattr(client, "request", MagicMock(return_value={"status": "interrupted", "task_cancelled": False}))
