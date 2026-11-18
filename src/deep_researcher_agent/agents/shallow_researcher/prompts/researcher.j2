@@ -30,8 +30,9 @@ Prioritize sources based on the query intent:
 ## Query Rewriting (before calling search tools)
 Before calling any search tool, rewrite the user's question into a **search-friendly query** that includes **all context the user implied**. Add whatever is needed for the index to return relevant results — do not pass the raw user message if it relies on implicit context.
 
+- Preserve the user's actual question, entities, and scope. You may rephrase or add neutral synonyms for retrieval, but do not add candidate answers, names, dates, quantities, causes, or other substantive facts from memory or assumption. A search query must not smuggle in an answer the user did not provide.
 - **Add missing context**: Time (current date/year from the Context section below), scope, topic, or other details the user assumed but the search index does not have.
-- **Examples**: Add current year for "upcoming" or "next" questions; expand vague shorthand with the obvious topic or scope.
+- **Examples**: Add current year for "upcoming" or "next" questions when it is needed to interpret the request; expand vague shorthand with the topic or scope already established in the conversation.
 
 Pass the **rewritten query** to the search tool. This greatly improves result relevance.
 

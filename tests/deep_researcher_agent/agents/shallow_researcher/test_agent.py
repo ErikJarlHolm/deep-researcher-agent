@@ -311,6 +311,8 @@ class TestShallowResearcherAgent:
         assert re.search(r"\[\d+\]", agent.system_prompt)
         assert "**References:**" in agent.system_prompt
         assert "- [1] mcp_time__get_current_time" in agent.system_prompt
+        assert "do not add candidate answers" in agent.system_prompt.lower()
+        assert "must not smuggle in an answer" in agent.system_prompt.lower()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("with_tools", [True, False])

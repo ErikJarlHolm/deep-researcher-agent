@@ -143,6 +143,9 @@ These are model instructions, not a deterministic claim-verification guarantee.
 Citation verification checks source identities and reference integrity; it does not
 by itself establish that a passage supports every claim. Validate grounding changes
 with both answerable and unanswerable questions, not just citation-format tests.
+Search-query rewriting may add neutral synonyms and conversation context, but must
+not insert candidate answers or substantive facts that were not supplied by the user
+or established by earlier evidence.
 
 ### Data Science Agent
 
