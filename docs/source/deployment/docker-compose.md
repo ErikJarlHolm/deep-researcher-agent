@@ -249,6 +249,9 @@ project-name change; its value is not part of the Git update.
    sensitive variables to Compose for interpolation and displays service logs.
    The Workbench overlay builds the local backend and frontend images, rather
    than silently using the published images that lack local changes.
+   If the stack was already running when you pulled an update, use **Stop**
+   then **Start** to apply the new configuration. **Start** alone does not
+   replace running containers. Keep the data and model volumes.
 5. Once the services are ready, open **Applications > Deepak**. The project
    application forwards its port 3000 to the Compose frontend on port 3000.
    Workbench supplies its own remote proxy connection; a separate terminal SSH
