@@ -10,23 +10,26 @@ from knowledge_layer.llamaindex import LlamaIndexIngestor
 
 from deep_researcher_agent.document_preview import COLLECTION
 from deep_researcher_agent.document_preview import retrieval_config
+from deep_researcher_agent.knowledge.schema import FileStatus
 from deep_researcher_agent.knowledge.schema import JobState
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("fixture", type=Path)
+    parser.add_argument("fixtures", type=Path, nargs="+")
     args = parser.parse_args()
-    if not args.fixture.is_file() or args.fixture.suffix.lower() not in {".txt", ".md"}:
-        parser.error("Provide an existing .txt or .md test fixture")
+    if any(not fixture.is_file() or fixture.suffix.lower() not in {".txt", ".md", ".pdf"} for fixture in args.fixtures):
+        parser.error("Provide existing .txt, .md, or .pdf test fixtures")
     ingestor = LlamaIndexIngestor(retrieval_config())
-    job = ingestor.submit_job([str(args.fixture)], COLLECTION)
-    deadline = time.monotonic() + 60
+    job = ingestor.submit_job([str(fixture) for fixture in args.fixtures], COLLECTION)
+    deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         result = ingestor.get_job_status(job)
         if result.status == JobState.COMPLETED:
-            if not result.metadata.get("total_chunks"):
-                raise SystemExit("Preview ingestion produced no chunks")
+            if len(result.file_details) != len(args.fixtures) or any(
+                file.status != FileStatus.SUCCESS or not file.chunks_created for file in result.file_details
+            ):
+                raise SystemExit("Preview ingestion did not index every fixture")
             return
         if result.status == JobState.FAILED:
             raise SystemExit("Preview document ingestion failed")

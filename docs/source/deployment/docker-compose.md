@@ -297,8 +297,10 @@ docker volume create deepak-document-preview-data
 
 With the model containers running on the shared `workbench` network, set
 `QWEN_CONTAINER` and `EMBEDDER_CONTAINER` to their Docker container names (not
-the service aliases). Set `FIXTURE` to the absolute path of a local `.txt`
-fixture readable by the container user. Set and export `DOCUMENT_PREVIEW_TOKEN` to a
+the service aliases). Set `FIXTURE` to the absolute path of a synthetic `.txt`
+fixture readable by the container user. The seed script also accepts `.md` and
+text-based `.pdf` fixtures, and can index multiple files passed as separate
+arguments. It does not perform OCR. Set and export `DOCUMENT_PREVIEW_TOKEN` to a
 private random value without putting it into shell history or version control.
 
 ```bash
@@ -323,8 +325,14 @@ curl -fsS http://127.0.0.1:38080/v1/documents/answer \
 ```
 
 Run comparisons serially: the preview and Deepak share the model GPU. The
-preview API returns the completed answer with citations and elapsed time; it
-does not stream tokens or replace the Workbench button.
+preview admits one question at a time; a busy JSON request returns HTTP 429 with
+`Retry-After`. `POST /v1/documents/answer/stream` accepts the same payload and
+authentication, and sends `accepted`, periodic `working`, and a terminal
+`answer` or `error` as server-sent events. Read terminal errors from the event
+body, not the HTTP status once streaming begins. A busy stream sends only an
+`error` event with `status: 429` and `retry_after_seconds`. Only the completed, verified
+answer is sent; no draft tokens are streamed. Closing either connection
+cancels the preview's work. The preview does not replace the Workbench button.
 
 #### Standalone Docker Compose
 
