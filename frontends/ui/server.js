@@ -23,6 +23,7 @@
 
 const http = require('http')
 const httpProxy = require('http-proxy')
+const fs = require('fs')
 const { parse } = require('url')
 const { forwardWebSocketAuthCookie } = require('./websocket-cookie')
 
@@ -43,6 +44,10 @@ const getBackendWsUrl = () => {
 const BACKEND_HTTP_URL = getBackendUrl()
 const BACKEND_WS_URL = getBackendWsUrl()
 const NEXT_INTERNAL_URL = process.env.NEXT_INTERNAL_URL || 'http://localhost:3001'
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || ''
+if (!dev && fs.existsSync('./.base-path') && fs.readFileSync('./.base-path', 'utf8') !== BASE_PATH) {
+  throw new Error('NEXT_PUBLIC_BASE_PATH differs from the value used to build the frontend')
+}
 
 // In production, we run Next.js in the same process
 let nextApp = null
@@ -120,6 +125,16 @@ const startServer = async () => {
     let parsedUrl
     try {
       parsedUrl = parse(req.url, true)
+      const pathname = parsedUrl.pathname || '/'
+      if (BASE_PATH && pathname !== BASE_PATH && !pathname.startsWith(`${BASE_PATH}/`)) {
+        if (pathname === '/') {
+          res.writeHead(307, { Location: `${BASE_PATH}${req.url}` })
+          res.end()
+          return
+        }
+        req.url = `${BASE_PATH}${req.url}`
+        parsedUrl = parse(req.url, true)
+      }
     } catch {
       res.writeHead(400, { 'Content-Type': 'text/plain' })
       res.end('Bad Request')
@@ -153,7 +168,10 @@ const startServer = async () => {
       socket.destroy()
       return
     }
-    const pathname = parsedUrl.pathname || '/'
+    const rawPathname = parsedUrl.pathname || '/'
+    const pathname = BASE_PATH && rawPathname.startsWith(`${BASE_PATH}/`)
+      ? rawPathname.slice(BASE_PATH.length)
+      : rawPathname
 
     // Proxy /websocket to backend
     if (pathname === '/websocket' || pathname.startsWith('/websocket')) {

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "suite_sha256": "aa08eb4e65b69886d14e830989d28d225453bda68567ae7e6c7cbe4830c0dad2",
+  "documents_sha256": {
+    "2026-04-14 Klimatiltak_Norge.doc.pdf": "49392effd042898167379529c84eaeec142057b6e6d476e147be2931d29d6dbd",
+    "2026-04-14 Mest-rammet-land.doc.pdf": "666b79e345f3fe548a32ea2a0f3a7f5e22f3d575c88daa5a1a9de6822d428ec5",
+    "2026-05-22_klimaskepsis.pdf": "9ca80752b4ca9e8c1f93c9ea434503aaa5757e2e64e6bebd5d221ccf4ea406f4",
+    "2026-05-26_klima_tiltak.pdf": "1e609de668ea29907a549fbc3027c4afdf811ef94a229a5838b3a711f1092318",
+    "2026-05-26_klimaengasjement.pdf": "56dd5c75dae713c6b1db30fb86cb8721e0e3070ec2e43b51145360366b3a9a82"
+  },
+  "case_ids": [
+    "single-source-01-ocean-heat",
+    "single-source-02-climate-models",
+    "single-source-03-measure-period",
+    "single-source-04-low-cost-measures",
+    "single-source-05-eu-net-zero",
+    "single-source-06-capacity-gaps",
+    "single-source-07-co2-storage",
+    "single-source-08-green-shipping-corridors",
+    "single-source-09-most-affected-countries",
+    "single-source-10-pakistan-flood",
+    "multi-source-01-methane",
+    "multi-source-02-affected-countries-support",
+    "multi-source-03-transport-shipping",
+    "multi-source-04-bangladesh-finance",
+    "multi-source-05-targets-versus-action",
+    "absent-01-norway-prime-minister",
+    "absent-02-mars-moons",
+    "absent-03-author-phone",
+    "absent-04-exact-2040-temperature",
+    "absent-05-company-emissions"
+  ],
+  "source_policy": "documents_only"
+}

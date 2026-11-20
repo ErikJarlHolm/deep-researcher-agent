@@ -34,9 +34,22 @@ llms:
     base_url: http://qwen:8000/v1
     api_key: local
     temperature: 0.2
+    max_tokens: 4096
+    num_retries: 3
+    parallel_tool_calls: false
+
+  local_shallow_llm:
+    _type: openai
+    model_name: Qwen/Qwen3.5-35B-A3B
+    base_url: http://qwen:8000/v1
+    api_key: local
+    temperature: 0.2
     max_tokens: 8192
     num_retries: 3
     parallel_tool_calls: false
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
 
 functions:
   data_sources:
@@ -53,7 +66,7 @@ functions:
     backend: llamaindex
     collection_name: ${COLLECTION_NAME:-internal-documents}
     generate_summary: false
-    top_k: 5
+    top_k: 10
     chroma_dir: ${DEEP_RESEARCHER_CHROMA_DIR:-/app/data/chroma_data}
     embed_model: nvidia/Nemotron-3.5-Embed-1B-BF16
     embed_base_url: http://embedder:8000/v1
@@ -70,9 +83,14 @@ functions:
 
   shallow_research_agent:
     _type: shallow_research_agent
-    llm: local_research_llm
+    llm: local_shallow_llm
     max_llm_turns: 10
     max_tool_iterations: 5
+    evidence_verification_extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+      response_format:
+        type: json_object
 
   deep_research_agent:
     _type: deep_research_agent
@@ -82,10 +100,20 @@ functions:
     researcher_llm: local_research_llm
     planner_llm: local_research_llm
     writer_llm: local_research_llm
+    resource_limits:
+      max_execution_seconds: 240
 
 workflow:
   _type: chat_deepresearcher_agent
   enable_escalation: true
+  document_qa:
+    source_id: knowledge_layer
+    search_tool: knowledge_search
+    quick_seconds: 45
+    synthesis_seconds: 120
+    max_searches: 3
+    max_model_calls: 6
+    max_rounds: 2
   enable_clarifier: true
   use_async_deep_research: true
   checkpoint_db: ${DEEP_RESEARCHER_CHECKPOINT_DB:-./checkpoints.db}

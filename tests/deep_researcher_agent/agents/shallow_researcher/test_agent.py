@@ -16,6 +16,7 @@
 """Tests for the ShallowResearcherAgent."""
 
 import asyncio
+import json
 import re
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -26,12 +27,15 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
 
 from deep_researcher_agent.agents.shallow_researcher.agent import ShallowResearcherAgent
 from deep_researcher_agent.agents.shallow_researcher.agent import _append_minimal_citation
 from deep_researcher_agent.agents.shallow_researcher.agent import _format_chat_references
 from deep_researcher_agent.agents.shallow_researcher.agent import _has_citation_integrity
+from deep_researcher_agent.agents.shallow_researcher.agent import _is_valid_evidence_verdict
+from deep_researcher_agent.agents.shallow_researcher.agent import _split_evidence_content
 from deep_researcher_agent.agents.shallow_researcher.models import ShallowResearchAgentState
 from deep_researcher_agent.common import LLMProvider
 from deep_researcher_agent.common import LLMRole
@@ -60,6 +64,16 @@ def empty_web_search_tool(query: str) -> str:
 class TestShallowResearcherAgent:
     """Tests for the ShallowResearcherAgent class."""
 
+    def test_negative_verdict_can_have_empty_support_ids_but_positive_verdict_cannot(self):
+        verdict = {
+            "all_factual_claims_supported": False,
+            "unsupported_claims": ["An unsupported assertion."],
+            "supporting_evidence": [{"answer_span": "An unsupported assertion.", "evidence_passage_ids": []}],
+        }
+        assert _is_valid_evidence_verdict(verdict)
+        verdict["all_factual_claims_supported"] = True
+        assert not _is_valid_evidence_verdict(verdict)
+
     @pytest.fixture(autouse=True)
     def _bypass_citation_pipeline(self):
         """Bypass citation verification for tests that don't test it.
@@ -69,6 +83,7 @@ class TestShallowResearcherAgent:
         pipeline avoids EmptySourceRegistryError in run().
         """
         with (
+            patch.object(ShallowResearcherAgent, "_verify_answer_evidence", new_callable=AsyncMock, return_value=None),
             patch.object(SourceRegistry, "all_sources", return_value=[SourceEntry(url="https://example.com")]),
             patch("deep_researcher_agent.agents.shallow_researcher.agent.verify_citations") as mock_verify,
             patch("deep_researcher_agent.agents.shallow_researcher.agent.sanitize_report") as mock_sanitize,
@@ -104,12 +119,12 @@ class TestShallowResearcherAgent:
             llm_provider=mock_llm_provider,
             tools=[real_tool],
         )
-
         assert agent.llm_provider == mock_llm_provider
         assert len(agent.tools) == 1
         assert agent.max_llm_turns == 10
         assert agent.max_tool_iterations == 5
         assert agent.citation_repair_timeout == 60.0
+        assert agent.evidence_verification_timeout == 60.0
         assert agent.enforce_citations is False
         assert agent.callbacks == []
         assert agent.system_prompt is not None
@@ -613,6 +628,11 @@ class TestShallowResearcherSourceRegistryGating:
         yield
         reset_registry()
 
+    @pytest.fixture(autouse=True)
+    def _bypass_evidence_verification_unless_under_test(self):
+        with patch.object(ShallowResearcherAgent, "_verify_answer_evidence", new_callable=AsyncMock, return_value=None):
+            yield
+
     @pytest.fixture
     def mock_llm(self):
         llm = MagicMock()
@@ -1011,6 +1031,401 @@ class TestShallowResearcherSourceRegistryGating:
         assert result.messages[-1].content.rstrip().endswith("[1] weather_observation_tool")
 
 
+class TestShallowEvidenceVerification:
+    @pytest.fixture
+    def mock_llm(self):
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock()
+        llm.bind.return_value = llm
+        llm.bind_tools.return_value = llm
+        return llm
+
+    @pytest.fixture
+    def mock_llm_provider(self, mock_llm):
+        provider = MagicMock(spec=LLMProvider)
+        provider.get = MagicMock(return_value=mock_llm)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_unverified_factual_answer_is_replaced_with_abstention(self, mock_llm_provider, mock_llm):
+        """A successful tool call cannot publish unsupported model-memory claims."""
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[{"name": "web_search_tool", "args": {"query": "capital of France"}, "id": "verify-1"}],
+        )
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                tool_call,
+                AIMessage(content="The capital is Paris."),
+                AIMessage(
+                    content=(
+                        '{"all_factual_claims_supported": false, '
+                        '"unsupported_claims": ["The capital is Paris."], '
+                        '"supporting_evidence": []}'
+                    )
+                ),
+            ]
+        )
+        callback = MagicMock()
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[web_search_tool],
+            callbacks=[callback],
+        )
+        state = ShallowResearchAgentState(
+            messages=[
+                HumanMessage(content="Earlier question"),
+                ToolMessage(content="stale evidence from a prior turn", tool_call_id="prior-tool"),
+                HumanMessage(content="What is the capital of France?"),
+            ]
+        )
+
+        result = await agent.run(state)
+
+        assert result.messages[-1].content == "I couldn't verify the answer from the retrieved source passages."
+        verifier_messages = mock_llm.ainvoke.await_args.args[0]
+        assert isinstance(verifier_messages[0], SystemMessage)
+        assert "evidence auditor" in verifier_messages[0].content
+        assert "Results for: capital of France" in verifier_messages[-1].content
+        assert "What is the capital of France?" in verifier_messages[-1].content
+        assert "stale evidence from a prior turn" not in verifier_messages[-1].content
+        callback.emit_final_report.assert_called_once_with(
+            "I couldn't verify the answer from the retrieved source passages.",
+            cited_urls=[],
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_final_answer_after_tool_returns_abstention(self, mock_llm_provider, mock_llm):
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[{"name": "web_search_tool", "args": {"query": "capital of France"}, "id": "empty-1"}],
+        )
+        mock_llm.ainvoke = AsyncMock(side_effect=[tool_call, AIMessage(content="")])
+        callback = MagicMock()
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[web_search_tool],
+            callbacks=[callback],
+        )
+
+        result = await agent.run(ShallowResearchAgentState(messages=[HumanMessage(content="What is the capital?")]))
+
+        abstention = "I couldn't verify the answer from the retrieved source passages."
+        assert result.messages[-1].content == abstention
+        callback.emit_final_report.assert_called_once_with(abstention, cited_urls=[])
+
+    @pytest.mark.asyncio
+    async def test_grounded_answer_passes_verification(self, mock_llm_provider, mock_llm):
+        """Claims can pass when a current tool result supports them."""
+        mock_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content=(
+                    '{"all_factual_claims_supported": true, "unsupported_claims": [], '
+                    '"supporting_evidence": [{"answer_span": "The project code is LANTERN-593.", '
+                    '"evidence_passage_ids": ["p0001"]}]}'
+                )
+            )
+        )
+        extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[web_search_tool],
+            evidence_verification_extra_body=extra_body,
+        )
+
+        abstention = await agent._verify_answer_evidence(
+            "What is the project code?",
+            "The project code is **LANTERN-593** [1].",
+            [
+                ToolMessage(
+                    content="Project code: LANTERN-593.",
+                    tool_call_id="current-tool",
+                    name="knowledge_search",
+                )
+            ],
+        )
+
+        assert abstention is None
+        request = mock_llm.ainvoke.await_args.args[0][-1]
+        request_payload = json.loads(request.content)
+        assert request_payload["successful_tool_results"][0]["passages"] == [
+            {"passage_id": "p0001", "text": "Project code: LANTERN-593."}
+        ]
+        mock_llm.bind.assert_called_once_with(temperature=0.0, max_tokens=2048, extra_body=extra_body)
+
+    @pytest.mark.asyncio
+    async def test_invalid_evidence_passage_id_gets_one_repair(self, mock_llm_provider, mock_llm):
+        answer = "The project code is LANTERN-593."
+        support = [{"answer_span": answer, "evidence_passage_ids": ["missing"]}]
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "all_factual_claims_supported": True,
+                            "unsupported_claims": [],
+                            "supporting_evidence": support,
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "all_targets_supported": True,
+                            "repaired_support": [
+                                {
+                                    "item_index": 0,
+                                    "answer_span": answer,
+                                    "evidence_passage_ids": ["p0001"],
+                                }
+                            ],
+                        }
+                    )
+                ),
+            ]
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        abstention = await agent._verify_answer_evidence(
+            "What is the project code?",
+            answer,
+            [ToolMessage(content="Project code: LANTERN-593.", tool_call_id="current-tool", name="knowledge_search")],
+        )
+
+        assert abstention is None
+        assert mock_llm.ainvoke.await_count == 2
+        repair_request = mock_llm.ainvoke.await_args_list[1].args[0][-1]
+        repair_payload = json.loads(repair_request.content)
+        assert repair_payload["support_repair_targets"] == [
+            {
+                "item_index": 0,
+                "answer_span": answer,
+                "previous_evidence_passage_ids": ["missing"],
+                "repair_answer_span": False,
+                "repair_evidence_passage_ids": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_invalid_answer_span_gets_one_exact_support_repair(self, mock_llm_provider, mock_llm):
+        answer = "The project code is LANTERN-593."
+        support = [{"answer_span": "Project identifier is LANTERN-593.", "evidence_passage_ids": ["p0001"]}]
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "all_factual_claims_supported": True,
+                            "unsupported_claims": [],
+                            "supporting_evidence": support,
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "all_targets_supported": True,
+                            "repaired_support": [
+                                {
+                                    "item_index": 0,
+                                    "answer_span": answer,
+                                    "evidence_passage_ids": ["p0001"],
+                                }
+                            ],
+                        }
+                    )
+                ),
+            ]
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        abstention = await agent._verify_answer_evidence(
+            "What is the project code?",
+            answer,
+            [ToolMessage(content="Project code: LANTERN-593.", tool_call_id="current-tool", name="knowledge_search")],
+        )
+
+        assert abstention is None
+        assert mock_llm.ainvoke.await_count == 2
+        repair_request = mock_llm.ainvoke.await_args_list[1].args[0][-1]
+        repair_payload = json.loads(repair_request.content)
+        assert repair_payload["support_repair_targets"][0]["repair_answer_span"] is True
+        assert repair_payload["support_repair_targets"][0]["repair_evidence_passage_ids"] is False
+
+    @pytest.mark.asyncio
+    async def test_invalid_passage_id_repair_still_abstains(self, mock_llm_provider, mock_llm):
+        answer = "The project code is LANTERN-593."
+        support = [{"answer_span": answer, "evidence_passage_ids": ["missing"]}]
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "all_factual_claims_supported": True,
+                            "unsupported_claims": [],
+                            "supporting_evidence": support,
+                        }
+                    )
+                ),
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "all_targets_supported": True,
+                            "repaired_support": [
+                                {
+                                    "item_index": 0,
+                                    "answer_span": answer,
+                                    "evidence_passage_ids": ["still-missing"],
+                                }
+                            ],
+                        }
+                    )
+                ),
+            ]
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        abstention = await agent._verify_answer_evidence(
+            "What is the project code?",
+            answer,
+            [ToolMessage(content="Project code: LANTERN-593.", tool_call_id="current-tool", name="knowledge_search")],
+        )
+
+        assert abstention == "I couldn't verify the answer from the retrieved source passages."
+
+    @pytest.mark.asyncio
+    async def test_synthesized_claim_can_use_passages_from_multiple_results(self, mock_llm_provider, mock_llm):
+        answer = (
+            "Rapid methane reductions can provide immediate temperature benefits, and Norway targets a "
+            "methane-intensity reduction of more than 75 percent by 2030."
+        )
+        mock_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content=json.dumps(
+                    {
+                        "all_factual_claims_supported": True,
+                        "unsupported_claims": [],
+                        "supporting_evidence": [
+                            {
+                                "answer_span": answer,
+                                "evidence_passage_ids": ["p0001", "p0002"],
+                            }
+                        ],
+                    }
+                )
+            )
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        abstention = await agent._verify_answer_evidence(
+            "Why reduce methane quickly, and what is Norway's 2030 target?",
+            answer,
+            [
+                ToolMessage(
+                    content="Rapid methane reductions can provide immediate temperature benefits.",
+                    tool_call_id="climate-result",
+                    name="climate_search",
+                ),
+                ToolMessage(
+                    content="Norway's methane intensity target is a reduction of more than 75 percent by 2030.",
+                    tool_call_id="target-result",
+                    name="norway_search",
+                ),
+            ],
+        )
+
+        assert abstention is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "supporting_evidence",
+        [
+            [],
+            [{"answer_span": "A different claim.", "evidence_passage_ids": ["p0001"]}],
+            [{"answer_span": "The project code is LANTERN-593.", "evidence_passage_ids": ["p9999"]}],
+        ],
+    )
+    async def test_missing_or_fabricated_support_passage_fails_closed(
+        self, mock_llm_provider, mock_llm, supporting_evidence
+    ):
+        mock_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content=json.dumps(
+                    {
+                        "all_factual_claims_supported": True,
+                        "unsupported_claims": [],
+                        "supporting_evidence": supporting_evidence,
+                    }
+                )
+            )
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        abstention = await agent._verify_answer_evidence(
+            "Hva er prosjektkoden?",
+            "The project code is LANTERN-593.",
+            [
+                ToolMessage(
+                    content="Project code: LANTERN-593.",
+                    tool_call_id="current-tool",
+                    name="knowledge_search",
+                )
+            ],
+        )
+
+        assert abstention == "Jeg kan ikke bekrefte svaret ut fra de tilgjengelige kildene."
+
+    def test_evidence_passages_preserve_exact_source_substrings(self):
+        source = "\n".join(f"Section {index:04d}: exact source text." for index in range(100))
+
+        passages = _split_evidence_content(source)
+
+        assert len(passages) > 1
+        assert all(passage in source for passage in passages)
+        assert passages[0].startswith(source[:100])
+        assert passages[-1].endswith(source[-100:])
+
+    @pytest.mark.asyncio
+    async def test_invalid_evidence_verdict_fails_closed(self, mock_llm_provider, mock_llm):
+        """An invalid verifier response cannot release an unverified draft."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content='{"all_factual_claims_supported": "yes"}'))
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        with pytest.raises(RuntimeError, match="shallow_evidence_verification_invalid_response"):
+            await agent._verify_answer_evidence(
+                "What is CUDA?",
+                "Unsupported claim.",
+                [ToolMessage(content="An unrelated result.", tool_call_id="tool-3", name="web_search_tool")],
+            )
+
+    @pytest.mark.asyncio
+    async def test_tool_error_is_not_passed_as_evidence(self, mock_llm_provider, mock_llm):
+        mock_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content='{"all_factual_claims_supported": false, "unsupported_claims": ["claim"], '
+                '"supporting_evidence": []}'
+            )
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[web_search_tool])
+
+        await agent._verify_answer_evidence(
+            "Question?",
+            "Answer.",
+            [
+                ToolMessage(
+                    content="A URL that is only an error diagnostic",
+                    tool_call_id="tool-error",
+                    name="web_search_tool",
+                    status="error",
+                )
+            ],
+        )
+
+        request = mock_llm.ainvoke.await_args.args[0][-1]
+        assert "A URL that is only an error diagnostic" not in request.content
+        assert '"successful_tool_results": []' in request.content
+
+
 class TestShallowResearcherSourceCaptureIntegration:
     """Integration tests verifying source capture through the full pipeline.
 
@@ -1031,6 +1446,11 @@ class TestShallowResearcherSourceCaptureIntegration:
         provider = MagicMock(spec=LLMProvider)
         provider.get = MagicMock(return_value=mock_llm)
         return provider
+
+    @pytest.fixture(autouse=True)
+    def _bypass_evidence_verification_unless_under_test(self):
+        with patch.object(ShallowResearcherAgent, "_verify_answer_evidence", new_callable=AsyncMock, return_value=None):
+            yield
 
     @pytest.fixture(autouse=True)
     def _register_web_search_source(self):
@@ -1210,6 +1630,11 @@ class TestShallowResearcherSessionRegistry:
         provider = MagicMock(spec=LLMProvider)
         provider.get = MagicMock(return_value=mock_llm)
         return provider
+
+    @pytest.fixture(autouse=True)
+    def _bypass_evidence_verification_unless_under_test(self):
+        with patch.object(ShallowResearcherAgent, "_verify_answer_evidence", new_callable=AsyncMock, return_value=None):
+            yield
 
     @pytest.mark.asyncio
     async def test_run_uses_session_registry_when_set(self, mock_llm_provider, mock_llm):

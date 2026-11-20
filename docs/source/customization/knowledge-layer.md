@@ -32,10 +32,83 @@ A pluggable abstraction for document ingestion and retrieval. Swap backends with
   - [Supported File Types](#supported-file-types)
   - [Programmatic Usage](#programmatic-usage)
 - [Web UI Mode](#web-ui-mode)
+- [Adaptive Document Answers](#adaptive-document-answers)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Related Documentation](#related-documentation)
+
+---
+
+## Adaptive Document Answers
+
+`configs/config_web_onprem_documents.yml` opts into `workflow.document_qa`.
+Other profiles retain their existing research route unless they opt in.
+Document-only turns start with retrieval, a concise structured draft, and an
+independent claim-level evidence check, rather than a complexity classifier and
+a research plan. Comparisons and multi-document questions can therefore finish
+without launching a long-running research job.
+
+If essential parts remain unsupported, `auto` allows a second synthesis round
+with complementary searches and feedback about rejected claims. Supported
+claims survive an unsupported optional detail. Reference numbers and the source
+list are rendered in code from the passages actually supporting accepted claims;
+merely retrieving a file does not earn it a citation. This is still a model-based
+semantic check, not a proof of correctness.
+
+For requests explicitly asking for private or personal phone, email, or contact
+details, the document route suppresses generated claims containing recognizable
+telephone numbers or email addresses. Prompts also instruct both models to omit
+private or unrelated contact details. This narrow pattern-based safeguard does
+not identify all personal information or all ways of writing contact details;
+use configured output guardrails where stronger privacy controls are required.
+
+The shipped profile has a 45-second quick budget and a 120-second total document
+synthesis budget, at most three searches and six inference invocations. A malformed
+response gets at most one JSON-format repair, which also counts toward the six-call limit.
+If a draft omits only the optional deep-research flag, it defaults to no
+escalation; invalid claims or other malformed responses are not treated as an
+absence of evidence.
+Retrieval and verification count
+toward the wall-clock budget. These are upper budgets, **not latency guarantees**.
+A deadline cancels the active awaited operation. Only already-verified claims
+can become a clearly labelled partial answer; without any verified answer the
+workflow reports an operational failure, not a source-based refusal. Successful
+retrieval without answering evidence produces a bounded-search limitation, never
+a claim that the entire corpus lacks the answer.
+
+Clients can send `research_mode: "auto"` (default), `"quick"`, or `"deep"` in
+chat context. For clients that only support text content, the existing inline
+JSON envelope also accepts the field:
+
+```json
+{"query":"Investigate the unresolved contradictions","data_sources":["knowledge_layer"],"research_mode":"deep"}
+```
+
+`quick` stops after the first draft/check and never automatically starts deep
+research. `auto` broadens when needed; sustained unresolved evidence questions
+can escalate only after targeted retrieval has produced verified evidence.
+`deep` explicitly selects the existing planner/researcher/writer pathway.
+Natural-language requests for a thorough investigation retain semantic intent
+routing. No new UI mode selector is introduced.
+
+Report follow-ups and database-scoped research retain their existing routing and
+access checks. The shortcut applies only when the effective source selection is
+exactly the configured document source; an explicit empty selection is not a
+document search. All retrieval uses the existing filtered, request-scoped tool.
+Its optional `response_format: "json"` returns the universal `RetrievalResult`
+schema without internal image-storage locations or metadata. Text remains the
+default for existing tool consumers. The LlamaIndex path awaits asynchronous
+retrieval so embedding requests can be cancelled rather than blocking the event
+loop.
+
+The document algorithm depends on injected search and inference functions, not
+NAT or LangGraph. The adapter, API host, durable jobs, and deep-research workflow
+still use the existing stack. This is a migration seam, **not a completed NAT
+replacement**. The on-premises profile separately limits deep graph execution to
+240 seconds through `resource_limits.max_execution_seconds`; time spent before
+job submission is additional. The frozen v1 benchmark and its NAT baseline are
+unchanged; improvements must be measured in a separately identified candidate run.
 
 ---
 
@@ -144,6 +217,10 @@ functions:
     #   verify_ssl: true
     #   collection_ttl_hours: 24
 ```
+
+The registered `knowledge_search` tool returns up to 5,000 characters from each retrieved chunk to the agent.
+Longer chunks are truncated with an explicit marker; keep backend chunk sizes appropriate for the information
+the agent needs to cite.
 
 You can also use environment variable substitution in YAML for deployment-specific values:
 

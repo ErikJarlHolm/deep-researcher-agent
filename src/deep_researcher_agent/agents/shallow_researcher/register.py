@@ -59,6 +59,15 @@ class ShallowResearchAgentConfig(FunctionBaseConfig, name="shallow_research_agen
     )
     max_llm_turns: int = Field(default=10, description="Maximum number of LLM turns")
     max_tool_iterations: int = Field(default=5, description="Maximum tool-calling iterations before forcing synthesis")
+    evidence_verification_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        description="Maximum seconds for the shallow research evidence verification call",
+    )
+    evidence_verification_extra_body: dict[str, object] = Field(
+        default_factory=dict,
+        description="Provider-specific request options for the shallow research evidence verification call",
+    )
     enforce_citations: bool = Field(
         default=False,
         description="Fail instead of returning a generated answer when citation integrity cannot be preserved.",
@@ -177,16 +186,28 @@ async def shallow_research_agent(config: ShallowResearchAgentConfig, builder: Bu
                     )
 
                 # Build the agent with this turn's tool set.
+                validate_research_source_configuration(data_sources, "shallow research", selected_tools)
+                if state.document_qa is not None:
+                    from deep_researcher_agent.agents.document_qa.adapter import run_document_qa
+
+                    return await run_document_qa(
+                        state,
+                        config=state.document_qa,
+                        tools=selected_tools,
+                        llm=llm,
+                        extra_body=config.evidence_verification_extra_body,
+                    )
+
                 active_agent = ShallowResearcherAgent(
                     llm_provider=provider,
                     tools=selected_tools,
                     max_llm_turns=config.max_llm_turns,
                     max_tool_iterations=config.max_tool_iterations,
+                    evidence_verification_timeout=config.evidence_verification_timeout,
+                    evidence_verification_extra_body=config.evidence_verification_extra_body,
                     enforce_citations=config.enforce_citations,
                     callbacks=callbacks,
                 )
-
-                validate_research_source_configuration(data_sources, "shallow research", selected_tools)
 
                 return await active_agent.run(state)
         except Exception as exc:

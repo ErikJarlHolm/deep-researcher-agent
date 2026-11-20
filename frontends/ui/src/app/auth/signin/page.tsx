@@ -16,6 +16,7 @@ import { signIn } from 'next-auth/react'
 import { Flex, Text, Button, Card, Stack, Logo, Spinner } from '@/adapters/ui'
 import { LoadingSpinner } from '@/adapters/ui/icons'
 import { useAppConfig } from '@/shared/context'
+import { withBasePath } from '@/shared/utils/base-path'
 import { StarfieldAnimation } from '@/shared/components/StarfieldAnimation'
 
 const DISCLAIMER_TEXT =
@@ -47,7 +48,7 @@ const SignInContent = (): ReactNode => {
   }
 
   const handleSignIn = (): void => {
-    signIn(authProviderId, { callbackUrl: '/' })
+    signIn(authProviderId, { callbackUrl: withBasePath('/') })
   }
 
   // Map NextAuth error codes to user-friendly messages

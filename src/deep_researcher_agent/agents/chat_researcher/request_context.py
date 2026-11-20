@@ -8,6 +8,8 @@ from typing import Annotated
 from pydantic import BaseModel
 from pydantic import StringConstraints
 
+from deep_researcher_agent.agents.document_qa.models import ResearchMode
+
 DatabaseName = Annotated[
     str,
     StringConstraints(
@@ -26,3 +28,4 @@ class ChatRequestContext(BaseModel):
     data_sources: list[str] | None = None
     active_report_job_id: str | None = None
     database_name: DatabaseName | None = None
+    research_mode: ResearchMode | None = None

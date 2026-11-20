@@ -14,6 +14,8 @@ Each agent in the Deep Researcher Agent blueprint uses [Jinja2](https://jinja.pa
 | `src/deep_researcher_agent/agents/chat_researcher/prompts/intent_classification.j2` | Intent Classifier | Classifies queries as meta or research, determines depth (shallow/deep), generates meta responses |
 | `src/deep_researcher_agent/agents/chat_researcher/prompts/context_aware_intent_router.j2` | Context-aware Intent Router | Classifies interactions, selects classic depth, and performs bounded catalog discovery for GSF-enabled workflows |
 | `src/deep_researcher_agent/agents/shallow_researcher/prompts/researcher.j2` | Shallow Researcher | Defines the research persona, tool usage strategy, source hierarchy, and citation rules |
+| `src/deep_researcher_agent/agents/document_qa/prompts/generate.j2` | Opt-in Document QA | Produces concise passage-linked claims and targeted searches for missing parts |
+| `src/deep_researcher_agent/agents/document_qa/prompts/verify.j2` | Document Evidence Checker | Accepts or rejects individual claim IDs and assesses whether the supported answer is complete |
 | `src/deep_researcher_agent/agents/data_science/prompts/agent.j2` | Data Science Agent | Guides adaptive semantic discovery, structured queries, document/web evidence gathering, and analytical synthesis |
 | `src/deep_researcher_agent/agents/deep_researcher/prompts/orchestrator.j2` | Deep Research Orchestrator | Coordinates ordered routing, planning, batched research, and writer delegation; it does not call source tools directly |
 | `src/deep_researcher_agent/agents/deep_researcher/prompts/source_router.j2` | Source Router | Selects an advisory route from the request-allowed source catalog before planning |
@@ -32,6 +34,10 @@ src/deep_researcher_agent/agents/
     shallow_researcher/
         prompts/
             researcher.j2              # Single system prompt
+    document_qa/
+        prompts/
+            generate.j2                # Passage-grounded structured draft and repair
+            verify.j2                  # Compact claim-level verdict
     data_science/
         prompts/
             agent.j2                   # Adaptive analytical controller prompt
@@ -139,10 +145,43 @@ qualifications, and acknowledge missing information without adding facts from me
 or citing irrelevant results. This applies across document topics and source types;
 it does not alter tool-free chat.
 
-These are model instructions, not a deterministic claim-verification guarantee.
-Citation verification checks source identities and reference integrity; it does not
-by itself establish that a passage supports every claim. Validate grounding changes
-with both answerable and unanswerable questions, not just citation-format tests.
+The opt-in document route uses static `generate.j2` and `verify.j2` system
+templates with bounded JSON user payloads, not an agentic tool-calling loop.
+The first receives the question, reference-only history, code-owned passage IDs,
+and revision feedback. The second receives the question, proposed claims, and
+their cited passages. Rejected optional claims do not invalidate supported
+answers. Neither model authors reference numbers or the final sources section.
+See [Adaptive Document Answers](./knowledge-layer.md#adaptive-document-answers).
+
+These prompt instructions are not a deterministic claim-verification guarantee.
+After a tool-using answer, the shallow researcher also makes a bounded model call
+to check factual claims against successful tool output from the current turn. If
+the auditor finds unsupported claims, or the model returns no final answer after
+a tool call, the agent returns a brief, deterministic abstention. For a supported answer, the auditor must return a
+verbatim answer span for each factual claim and one or more IDs for exact,
+overlapping passages split from successful current-turn tool output. The agent
+checks each answer span against the draft and each passage ID against the IDs it
+generated from that output; the model does not need to reproduce source text.
+If an answer span or passage ID fails validation, the agent makes one bounded
+repair attempt for only the invalid support groups. It preserves previously
+valid spans and IDs and rechecks every repaired item against the unchanged
+answer and current-turn evidence. If support still cannot be established, the
+agent abstains. Multiple passage IDs can support a claim that synthesizes
+evidence from separate results. Passage boundaries overlap to avoid cutting
+off context, but the evidence text itself is not altered.
+Whitespace, Unicode, Markdown emphasis, and inline citation markers are
+normalized only for the exact answer-span check. This adds latency and remains a
+model-based check: it can miss claims or misjudge whether a real quote entails
+them, and it does not prove that retrieval found all relevant evidence.
+Citation verification checks source identities and reference integrity; it does
+not by itself establish that a passage supports every claim.
+Provider-specific request options for this audit call can be set with
+`evidence_verification_extra_body` on the `shallow_research_agent` configuration;
+for example, OpenAI-compatible Qwen deployments can disable internal reasoning
+and request JSON mode for this bounded classification call. The JSON response is
+still checked locally against the required schema and exact evidence matches.
+Validate grounding changes with both answerable and unanswerable questions, not
+just citation-format tests.
 Search-query rewriting may add neutral synonyms and conversation context, but must
 not insert candidate answers or substantive facts that were not supplied by the user
 or established by earlier evidence.

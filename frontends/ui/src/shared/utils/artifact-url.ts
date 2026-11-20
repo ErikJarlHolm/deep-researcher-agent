@@ -9,6 +9,8 @@
  * the single source of truth for building the same-origin content URL used by the UI.
  */
 
+import { withBasePath } from './base-path'
+
 export const ARTIFACT_SCHEME = 'artifact://'
 
 /** True when a markdown image `src` uses the durable `artifact://<id>` scheme. */
@@ -39,7 +41,7 @@ const ARTIFACT_IMG_RE = /!\[([^\]]*)\]\(artifact:\/\/([^)]+)\)/g
 
 /** Build the relative same-origin content path for an artifact (no leading origin). */
 export const artifactContentPath = (jobId: string, artifactId: string): string =>
-  `/api/jobs/async/job/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactId)}/content`
+  withBasePath(`/api/jobs/async/job/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactId)}/content`)
 
 /**
  * Replace every `![alt](artifact://<id>)` image using `replacer`. Returning `null` from the

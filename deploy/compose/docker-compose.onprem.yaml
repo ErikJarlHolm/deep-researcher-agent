@@ -10,6 +10,11 @@ services:
       - NVIDIA_API_KEY=
       # The OpenAI-compatible embedding client requires a nonempty placeholder.
       - DEEP_RESEARCHER_EMBED_API_KEY=local
+    depends_on:
+      qwen:
+        condition: service_healthy
+      embedder:
+        condition: service_healthy
 
   qwen:
     image: ${DEEP_RESEARCHER_VLLM_IMAGE:-vllm/vllm-openai:cu130-nightly}
@@ -43,6 +48,12 @@ services:
       - "8000"
     networks:
       - deep-researcher-network
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).close()"]
+      interval: 15s
+      timeout: 10s
+      retries: 120
+      start_period: 30m
     deploy:
       resources:
         reservations:
@@ -67,6 +78,12 @@ services:
       - "8000"
     networks:
       - deep-researcher-network
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/photon-engine-server", "--health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 120
+      start_period: 30m
     deploy:
       resources:
         reservations:

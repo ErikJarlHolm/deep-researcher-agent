@@ -58,6 +58,20 @@ def test_workbench_can_load_compose_using_its_project_name(ngc_api_key: str | No
         assert result.returncode == 0, result.stderr
         project = json.loads(result.stdout)
         assert project["name"] == spec["meta"]["name"]
+        services = project["services"]
+        assert {"deep-researcher-agent", "frontend", "postgres", "qwen", "embedder"} <= services.keys()
+        assert services["deep-researcher-agent"]["pull_policy"] == "build"
+        assert services["frontend"]["pull_policy"] == "build"
+        deepak = next(app for app in spec["execution"]["apps"] if app["name"] == "Deepak")
+        prefix = f"/projects/{spec['meta']['name']}/applications/{deepak['name']}"
+        assert deepak["webapp_options"]["port"] == "3000"
+        assert deepak["webapp_options"]["proxy"]["trim_prefix"] is False
+        assert services["frontend"]["build"]["args"]["NEXT_PUBLIC_BASE_PATH"] == prefix
+        assert services["frontend"]["environment"]["NEXT_PUBLIC_BASE_PATH"] == prefix
+        assert any(p["target"] == 3000 for p in services["frontend"]["ports"])
+        for model in ("qwen", "embedder"):
+            assert services["deep-researcher-agent"]["depends_on"][model]["condition"] == "service_healthy"
+            assert services[model]["healthcheck"]["test"]
         assert project["services"]["embedder"]["environment"]["NGC_API_KEY"] == ngc_api_key
         backend_env = project["services"]["deep-researcher-agent"]["environment"]
         profile = yaml.safe_load(

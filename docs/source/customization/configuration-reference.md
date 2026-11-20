@@ -734,6 +734,7 @@ catalog when the provider offer or deployment changes.
 | `enable_escalation` | `bool` | `true` | Allow the intent classifier to route queries to deep research. When `false`, all research queries use shallow research only. |
 | `enable_clarifier` | `bool` | `true` | Run the clarifier agent before deep research to gather user requirements. |
 | `use_async_deep_research` | `bool` | `false` | Submit deep research as an async background job (requires [Dask](https://www.dask.org/) scheduler). |
+| `document_qa` | `object` or `None` | `None` | Opt into bounded, claim-verified document answers before general research; see below. |
 | `hybrid_research_agent` | `str` or `None` | `None` | Optional function reference invoked when catalog-aware routing selects Hybrid research. |
 | `max_history` | `int` | `20` | Maximum number of messages to keep in conversation history before trimming. |
 | `checkpoint_db` | `str` | `./checkpoints.db` | SQLite path or PostgreSQL DSN for persistent conversation checkpoints. |
@@ -741,6 +742,23 @@ catalog when the provider offer or deployment changes.
 
 Relay configuration is strict: unknown nested fields and invalid OTLP endpoint
 URLs fail workflow validation instead of being silently ignored.
+
+### Adaptive document QA
+
+`configs/config_web_onprem_documents.yml` enables this opt-in route. See
+[Adaptive Document Answers](./knowledge-layer.md#adaptive-document-answers) for
+request modes, citation handling, deadlines, and the migration boundary.
+
+| `document_qa` field | Default | Meaning |
+|---|---|---|
+| `source_id`, `search_tool` | `knowledge_layer`, `knowledge_search` | Registry source and request-filtered retrieval tool supporting universal-schema JSON. |
+| `quick_seconds` | `45` | First-pass deadline; a `quick` request never extends it. |
+| `synthesis_seconds` | `120` | Total document-route deadline from its start, not an additional allowance. |
+| `max_searches` | `3` | Maximum retrieval attempts across all document rounds. |
+| `max_model_calls` | `6` | Maximum inference invocations, including JSON-format repair; provider transport retries also remain subject to the deadline. |
+| `max_rounds` | `2` | Initial generation/check plus bounded corrective synthesis. |
+| `max_evidence_chars` | `18000` | Passage-text allowance per prompt; source IDs remain code-owned across rounds. |
+| `generation_tokens`, `verification_tokens` | `1536`, `512` | Compact JSON output limits; the verifier returns claim IDs instead of copying the answer and evidence. |
 
 > **Note:** `interactive_auth` is a YAML-level field consumed by the CLI entry point (`start_cli.sh` / `deep-researcher-research`), not a Pydantic field on `ChatDeepResearcherConfig`. It can be set in YAML config files but is not part of the workflow config class.
 

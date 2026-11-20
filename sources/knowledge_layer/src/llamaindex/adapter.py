@@ -1722,7 +1722,7 @@ class LlamaIndexRetriever(BaseRetriever):
 
             # Create retriever and query
             retriever = index.as_retriever(similarity_top_k=top_k)
-            nodes = retriever.retrieve(query)
+            nodes = await retriever.aretrieve(query)
 
             # Normalize results to Chunk schema
             chunks = [self.normalize(node) for node in nodes]

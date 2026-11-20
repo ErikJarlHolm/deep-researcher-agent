@@ -26,6 +26,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import ValidationError
 
+from deep_researcher_agent.agents.document_qa.models import DocumentQAConfig
 from deep_researcher_agent.common import VerboseTraceCallback
 from deep_researcher_agent.common import _create_chat_response
 from deep_researcher_agent.common import format_data_source_tools
@@ -59,6 +60,7 @@ from .models import WorkflowFailure
 from .models import WorkflowSuccess
 from .utils import _extract_database_name_from_request_metadata
 from .utils import _extract_query_context
+from .utils import _extract_research_mode_from_request_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +338,9 @@ class ChatDeepResearcherConfig(FunctionBaseConfig, name="chat_deepresearcher_age
     """Configuration for the chat deep researcher orchestrator agent."""
 
     enable_escalation: bool = Field(default=False, description="Enable escalation from shallow to deep research")
+    document_qa: DocumentQAConfig | None = Field(
+        default=None, description="Opt-in bounded document QA before the general research workflow."
+    )
     max_history: int = Field(
         default=20, description="Maximum number of messages to keep in history before invoking the agent"
     )
@@ -680,6 +685,7 @@ async def chat_deepresearcher_agent(config: ChatDeepResearcherConfig, builder: B
         clarifier_fn=clarifier_fn.ainvoke if clarifier_fn else None,
         enable_clarifier=config.enable_clarifier,
         enable_escalation=config.enable_escalation,
+        document_qa=config.document_qa,
         callbacks=callbacks,
         max_history=config.max_history,
         deep_research_job_submitter=deep_research_job_submitter,
@@ -758,10 +764,17 @@ async def chat_deepresearcher_agent(config: ChatDeepResearcherConfig, builder: B
             request_context = _extract_query_context(query)
             if request_context.database_name is None:
                 request_context.database_name = _extract_database_name_from_request_metadata(Context.get().metadata)
-        except ValidationError:
-            logger.warning("Rejected chat request with an invalid database scope")
+            if request_context.research_mode is None:
+                request_context.research_mode = _extract_research_mode_from_request_metadata(Context.get().metadata)
+        except ValidationError as error:
+            invalid_mode = any("research_mode" in item["loc"] for item in error.errors())
+            logger.warning("Rejected chat request with invalid context (invalid_mode=%s)", invalid_mode)
             invalid_scope_response = _create_chat_response(
-                "The requested database scope is invalid. Please select a valid database.",
+                (
+                    "The requested research mode is invalid. Select auto, quick, or deep."
+                    if invalid_mode
+                    else "The requested database scope is invalid. Please select a valid database."
+                ),
                 response_id="invalid_database_scope",
                 model=workflow_id,
             )
@@ -830,6 +843,7 @@ async def chat_deepresearcher_agent(config: ChatDeepResearcherConfig, builder: B
                 available_documents=available_documents,
                 skip_clarifier=skip_clarifier,
                 active_report_job_id=effective_report_job_id,
+                research_mode=request_context.research_mode or "auto",
             )
             result = await agent.run(state, thread_id=nat_context_conversation_id)
         finally:

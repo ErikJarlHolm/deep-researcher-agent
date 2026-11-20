@@ -20,6 +20,7 @@ from typing import Any
 from langchain_core.messages import BaseMessage
 from langchain_core.messages import trim_messages
 
+from deep_researcher_agent.agents.document_qa.models import ResearchMode
 from deep_researcher_agent.common import parse_data_sources
 
 from .request_context import ChatRequestContext
@@ -133,6 +134,7 @@ def _extract_context_from_text(text: str) -> ChatRequestContext:
                     data_sources=parse_data_sources(payload.get("data_sources")),
                     active_report_job_id=_clean_optional_string(payload.get("active_report_job_id")),
                     database_name=payload.get("database_name"),
+                    research_mode=payload.get("research_mode"),
                 )
     return ChatRequestContext(query_text=text)
 
@@ -157,6 +159,7 @@ def _extract_query_context(payload: Any) -> ChatRequestContext:
             content.get("active_report_job_id")
         )
         database_name = payload.get("database_name") if "database_name" in payload else content.get("database_name")
+        research_mode = payload.get("research_mode", content.get("research_mode"))
         messages = content.get("messages", [])
         query_text = None
         if isinstance(messages, list) and messages:
@@ -179,11 +182,14 @@ def _extract_query_context(payload: Any) -> ChatRequestContext:
             active_report_job_id = active_report_job_id or inline_context.active_report_job_id
             if database_name is None:
                 database_name = inline_context.database_name
+            if research_mode is None:
+                research_mode = inline_context.research_mode
         return ChatRequestContext(
             query_text=query_text or "",
             data_sources=data_sources,
             active_report_job_id=active_report_job_id,
             database_name=database_name,
+            research_mode=research_mode,
         )
 
     messages = getattr(payload, "messages", None)
@@ -191,6 +197,7 @@ def _extract_query_context(payload: Any) -> ChatRequestContext:
         data_sources = parse_data_sources(getattr(payload, "data_sources", None))
         active_report_job_id = _clean_optional_string(getattr(payload, "active_report_job_id", None))
         database_name = _get_declared_object_field(payload, "database_name")
+        research_mode = _get_declared_object_field(payload, "research_mode")
         query_text = None
         for msg in reversed(messages):
             if _is_user_role(getattr(msg, "role", None)):
@@ -207,11 +214,14 @@ def _extract_query_context(payload: Any) -> ChatRequestContext:
             active_report_job_id = active_report_job_id or inline_context.active_report_job_id
             if database_name is None:
                 database_name = inline_context.database_name
+            if research_mode is None:
+                research_mode = inline_context.research_mode
         return ChatRequestContext(
             query_text=query_text or "",
             data_sources=data_sources,
             active_report_job_id=active_report_job_id,
             database_name=database_name,
+            research_mode=research_mode,
         )
 
     return _extract_context_from_text(str(payload))
@@ -223,6 +233,14 @@ def _extract_database_name_from_request_metadata(metadata: Any) -> DatabaseName 
     if not isinstance(payload, dict):
         return None
     return _extract_query_context(payload).database_name
+
+
+def _extract_research_mode_from_request_metadata(metadata: Any) -> ResearchMode | None:
+    """Recover a mode stripped by NAT's OpenAI-compatible request model."""
+    payload = getattr(metadata, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    return _extract_query_context(payload).research_mode
 
 
 def _extract_query_and_sources(payload: Any) -> tuple[str, list[str] | None]:

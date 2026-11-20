@@ -15,6 +15,7 @@
 
 """Tests for citation verification module."""
 
+import json
 import logging
 from html import escape
 
@@ -614,6 +615,17 @@ class TestGenericUrlExtractor:
 
 class TestKnowledgeLayerParser:
     """Tests for knowledge layer output parser."""
+
+    def test_structured_result_preserves_document_identity_and_page(self):
+        content = json.dumps(
+            {"success": True, "chunks": [{"file_name": "Policy.pdf", "page_number": 3, "content": "A verified fact."}]}
+        )
+        entries = extract_sources_from_tool_result("knowledge_search", content)
+        assert [entry.citation_key for entry in entries] == ["Policy.pdf, p.3"]
+
+    @pytest.mark.parametrize("payload", [{"success": True, "chunks": []}, {"success": False, "chunks": []}])
+    def test_empty_or_failed_structured_result_is_not_citable(self, payload):
+        assert extract_sources_from_tool_result("knowledge_search", json.dumps(payload)) == []
 
     def test_parse_single_result(self):
         content = (

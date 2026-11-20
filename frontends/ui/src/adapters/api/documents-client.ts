@@ -9,6 +9,7 @@
  */
 
 import { apiConfig } from './config'
+import { withBasePath } from '@/shared/utils/base-path'
 import {
   CollectionInfoSchema,
   CollectionListResponseSchema,
@@ -23,12 +24,12 @@ import {
 
 const getCollectionsUrl = (): string => {
   const isBrowser = typeof window !== 'undefined'
-  return isBrowser ? '/api/v1/collections' : apiConfig.collectionsUrl
+  return isBrowser ? withBasePath('/api/v1/collections') : apiConfig.collectionsUrl
 }
 
 const getDocumentsBaseUrl = (): string => {
   const isBrowser = typeof window !== 'undefined'
-  return isBrowser ? '/api/v1' : apiConfig.documentsBaseUrl
+  return isBrowser ? withBasePath('/api/v1') : apiConfig.documentsBaseUrl
 }
 
 // ============================================================================

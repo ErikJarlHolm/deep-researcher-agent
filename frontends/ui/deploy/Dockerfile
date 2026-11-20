@@ -110,8 +110,11 @@ COPY . .
 RUN rm -f .env .env.local .env.*.local .env.development .env.production 2>/dev/null || true
 
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG NEXT_PUBLIC_BASE_PATH=""
+ENV NEXT_PUBLIC_BASE_PATH=${NEXT_PUBLIC_BASE_PATH}
 
 RUN npm run build
+RUN printf '%s' "$NEXT_PUBLIC_BASE_PATH" > /app/.base-path
 
 # Remove devDependencies — keeps dev-only packages out of the production image
 RUN npm ci --omit=dev --ignore-scripts
@@ -127,6 +130,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+ARG NEXT_PUBLIC_BASE_PATH=""
+ENV NEXT_PUBLIC_BASE_PATH=${NEXT_PUBLIC_BASE_PATH}
 
 RUN groupadd --system --gid 1001 nodejs \
     && useradd --system --uid 1001 --gid nodejs nextjs \
@@ -139,6 +144,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 COPY --from=builder --chown=nextjs:nodejs /app/next.config.ts ./next.config.ts
 COPY --from=builder --chown=nextjs:nodejs /app/server.js ./server.js
 COPY --from=builder --chown=nextjs:nodejs /app/websocket-cookie.js ./websocket-cookie.js
+COPY --from=builder --chown=nextjs:nodejs /app/.base-path ./.base-path
 
 USER nextjs
 

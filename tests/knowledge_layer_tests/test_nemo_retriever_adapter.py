@@ -36,6 +36,7 @@ from deep_researcher_agent.knowledge import BaseRetriever
 from deep_researcher_agent.knowledge import Chunk
 from deep_researcher_agent.knowledge import ContentType
 from deep_researcher_agent.knowledge import JobState
+from deep_researcher_agent.knowledge import RetrievalResult
 from deep_researcher_agent.knowledge.base import IngestionBatchTooLargeError
 from deep_researcher_agent.knowledge.base import IngestionCapacityError
 from deep_researcher_agent.knowledge.factory import is_ingestor_registered
@@ -832,6 +833,25 @@ def test_query_mapping_citations_content_types_and_image_safety():
     formatted = _format_results(result, "findings")
     assert "Vector Distance: -0.1 (lower is closer)" in formatted
     assert "Relevance Score:" not in formatted
+
+
+def test_shared_formatter_preserves_evidence_beyond_initial_excerpt():
+    evidence = "The supported fact appears after the initial excerpt."
+    content = f"{'x' * 1800}{evidence}{'y' * 4000}"
+    chunk = Chunk(
+        chunk_id="chunk-1",
+        content=content,
+        file_name="report.pdf",
+        display_citation="report.pdf",
+        content_type=ContentType.TEXT,
+    )
+    result = RetrievalResult(query="query", backend="test", chunks=[chunk])
+
+    formatted = _format_results(result, "query")
+
+    assert evidence in formatted
+    assert content[:5000] in formatted
+    assert "... [truncated]" in formatted
 
 
 @pytest.mark.parametrize("distance", [float("nan"), float("inf"), float("-inf")])

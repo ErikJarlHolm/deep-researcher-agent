@@ -39,6 +39,8 @@ from nat.data_models.function import FunctionBaseConfig
 
 logger = logging.getLogger(__name__)
 
+_MAX_RESULT_CONTENT_CHARS = 5000
+
 
 def _url_from_env(name: str, default: str | None = None) -> HttpUrl | None:
     value = os.environ.get(name) or default
@@ -553,10 +555,11 @@ def _format_results(retrieval_result, query: str) -> str:
             lines.append(f"Relevance Score: {chunk.score:.2f}")
         lines.append("")
 
-        # Content (truncate if very long)
+        # Keep retrieved chunks intact up to a bounded size so relevant text
+        # later in a chunk remains available to the agent.
         content = chunk.content
-        if len(content) > 1500:
-            content = content[:1500] + "... [truncated]"
+        if len(content) > _MAX_RESULT_CONTENT_CHARS:
+            content = content[:_MAX_RESULT_CONTENT_CHARS] + "... [truncated]"
         lines.append(content)
         lines.append("")
 
@@ -610,11 +613,12 @@ async def knowledge_retrieval(config: KnowledgeRetrievalConfig, _builder: Builde
         "Knowledge retrieval initialized: backend=%s, collection=%s, top_k=%d", config.backend, collection, top_k
     )
 
-    async def search(query: str) -> str:
+    async def search(query: str, response_format: Literal["text", "json"] = "text") -> str:
         """Search for documents relevant to the query.
 
         Args:
             query (str): Natural language query describing what information you need.
+            response_format: Text excerpts (default) or the universal RetrievalResult JSON schema.
 
         Returns:
             str: Formatted string containing relevant document excerpts with citations.
@@ -637,6 +641,19 @@ async def knowledge_retrieval(config: KnowledgeRetrievalConfig, _builder: Builde
                 top_k=top_k,
             )
 
+            if response_format == "json":
+                structured = result.model_copy(
+                    update={
+                        "chunks": [
+                            chunk.model_copy(update={"content": chunk.content[:_MAX_RESULT_CONTENT_CHARS]})
+                            for chunk in result.chunks
+                        ]
+                    }
+                )
+                return structured.model_dump_json(
+                    exclude={"chunks": {"__all__": {"structured_data", "image_url", "image_storage_uri", "metadata"}}}
+                )
+
             # Format for LLM
             formatted = _format_results(result, query)
             logger.info(f"Knowledge search returned {len(result.chunks)} chunks")
@@ -645,6 +662,9 @@ async def knowledge_retrieval(config: KnowledgeRetrievalConfig, _builder: Builde
             return formatted
 
         except Exception as e:
+            if response_format == "json":
+                logger.error("Structured knowledge search failed (error_type=%s)", type(e).__name__)
+                raise RuntimeError("Structured knowledge search failed") from e
             logger.error(f"Knowledge search failed: {e}")
             return f"Error searching knowledge base: {str(e)}"
 

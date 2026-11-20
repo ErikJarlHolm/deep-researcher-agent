@@ -615,6 +615,8 @@ def is_non_citable_status_output(content: str) -> bool:
     if isinstance(payload, (dict, list)) and not payload:
         return True
     if isinstance(payload, dict):
+        if payload.get("success") is False:
+            return True
         error = payload.get("error")
         if error not in (None, False, "", [], {}):
             return True
@@ -736,6 +738,25 @@ def _parse_knowledge_layer(content: str, tool_name: str) -> list[SourceEntry]:
     Falls back to generic URL extraction if no Citation: fields found.
     """
     entries: list[SourceEntry] = []
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("chunks"), list):
+        for chunk in payload["chunks"]:
+            if not isinstance(chunk, dict) or not chunk.get("content"):
+                continue
+            title = chunk.get("file_name")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            page = chunk.get("page_number")
+            location = f", p.{page}" if type(page) is int and page > 0 else ""
+            entries.append(
+                SourceEntry(
+                    citation_key=f"{title}{location}", title=title, source_type="knowledge_layer", tool_name=tool_name
+                )
+            )
+        return entries
     citations = _KL_CITATION_RE.findall(content)
     sources = _KL_SOURCE_RE.findall(content)
     for i, citation_key in enumerate(citations):

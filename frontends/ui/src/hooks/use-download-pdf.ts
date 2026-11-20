@@ -3,6 +3,7 @@
 
 import { useCallback, useState } from 'react'
 import { sanitizeFilename } from '@/utils/sanitize-filename'
+import { withBasePath } from '@/shared/utils/base-path'
 
 export const useDownloadPdfRoute = () => {
   const [isLoading, setIsLoading] = useState(false)
@@ -17,7 +18,7 @@ export const useDownloadPdfRoute = () => {
     setError(null)
 
     try {
-      const response = await fetch('/api/generate-pdf', {
+      const response = await fetch(withBasePath('/api/generate-pdf'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markdown, jobId }),

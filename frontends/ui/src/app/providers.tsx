@@ -21,6 +21,7 @@ import { AppMotionConfig } from '@/shared/lib/motion'
 import { useLayoutStore } from '@/features/layout'
 import { useChatStore } from '@/features/chat/store'
 import type { ThemeMode } from '@/features/layout'
+import { withBasePath } from '@/shared/utils/base-path'
 
 interface ProvidersProps {
   children: ReactNode
@@ -180,6 +181,7 @@ export const Providers = ({ children, config }: ProvidersProps): ReactNode => {
   return (
     <AppConfigProvider config={config}>
       <SessionProvider
+        basePath={withBasePath('/api/auth')}
         refetchInterval={config.authRequired ? config.sessionRefreshIntervalSeconds : 0}
         refetchOnWindowFocus={config.authRequired}
         refetchWhenOffline={false}

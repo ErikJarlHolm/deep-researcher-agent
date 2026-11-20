@@ -3,7 +3,14 @@ services:
   deep-researcher-agent:
     # Workbench supplies runtime variables; do not load a developer's .env.
     env_file: !reset []
+    image: deep-researcher-workbench-backend:local
+    pull_policy: build
 
   frontend:
+    image: deep-researcher-workbench-frontend:local
+    pull_policy: build
+    build:
+      args:
+        NEXT_PUBLIC_BASE_PATH: ${DEEPAK_BASE_PATH:-/projects/erikjarlholm-deep-researcher-agent/applications/Deepak}
     environment:
-      - NVWB_TRIM_PREFIX=true
+      - NEXT_PUBLIC_BASE_PATH=${DEEPAK_BASE_PATH:-/projects/erikjarlholm-deep-researcher-agent/applications/Deepak}

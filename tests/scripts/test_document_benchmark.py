@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 import yaml
 
@@ -57,6 +58,11 @@ def test_stream_preserves_answer_before_empty_completion() -> None:
         {
             "type": "system_response_message",
             "content": {"text": "We couldn't process your request due to a temporary error."},
+            "status": "complete",
+        },
+        {
+            "type": "system_response_message",
+            "content": {"text": "An error occurred while researching your question. Please try again."},
             "status": "complete",
         },
     ],
@@ -131,7 +137,8 @@ def test_cases_are_isolated_and_reference_answers_are_not_sent(monkeypatch, tmp_
         client.http.close()
 
     assert results[0]["collection"] != results[1]["collection"]
-    assert all(result["quality_status"] == "not_scored" for result in results)
+    assert all(result["quality_status"] == "needs_review" for result in results)
+    assert all(result["execution_status"] == "completed" for result in results)
     uploads = [kwargs["files"] for method, path, kwargs in requests if path.endswith("/documents")]
     assert [[item[1][0] for item in upload] for upload in uploads] == [
         ["first.pdf", "second.pdf"],
@@ -243,3 +250,81 @@ def test_terminal_model_failure_is_recorded_and_later_questions_still_run(monkey
     assert benchmark.main() == 1
     assert client.run_case.call_count == 2
     assert json.loads(output.read_text(encoding="utf-8"))["cases"] == report["cases"]
+    monkeypatch.setattr(benchmark.sys, "argv", [*benchmark.sys.argv, "--timeout", "300"])
+    with pytest.raises(SystemExit):
+        benchmark.main()
+    assert client.run_case.call_count == 2
+
+
+def test_frozen_bundle_preserves_bytes_and_detects_document_changes(tmp_path: Path) -> None:
+    suite_path = tmp_path / "source.yaml"
+    original = b"name: example\r\nversion: 1\r\n"
+    suite_path.write_bytes(original)
+    document = tmp_path / "source.pdf"
+    document.write_bytes(b"first")
+    suite = {"tests": [{"id": "test-1"}]}
+    destination = tmp_path / "v1"
+
+    benchmark.freeze_bundle(destination, suite_path, [document], suite)
+
+    assert (destination / "suite.yaml").read_bytes() == original
+    before = json.loads((destination / "manifest.json").read_text())
+    assert before == benchmark.frozen_manifest(suite_path, [document], suite)
+    document.write_bytes(b"changed")
+    assert before != benchmark.frozen_manifest(suite_path, [document], suite)
+    with pytest.raises(FileExistsError):
+        benchmark.freeze_bundle(destination, suite_path, [document], suite)
+
+
+def test_source_audit_uses_inline_references_not_mentions_or_retrieval() -> None:
+    names = ["2026-04-14 Report.pdf", "Other.pdf"]
+    answer = (
+        "Report.pdf is mentioned. Finding [2]. Another claim [9].\n\n"
+        "**Referanser:**\n- [1] 2026-04-14 Report.pdf, p.1\n- [2] Other.pdf, p.2"
+    )
+
+    audit = benchmark.audit_citations(answer, names, names)
+
+    assert audit["cited_documents"] == ["Other.pdf"]
+    assert audit["required_documents_not_cited"] == ["2026-04-14 Report.pdf"]
+    assert audit["unresolved_inline_reference_ids"] == ["9"]
+    assert audit["uncited_reference_ids"] == ["1"]
+    assert audit["semantic_source_support"] == "not_reviewed"
+
+
+def test_source_audit_accepts_unique_short_filename_but_not_ambiguous_alias() -> None:
+    answer = "Finding [1].\n\n**References:**\n- [1] Report.pdf, p.2"
+    assert benchmark.audit_citations(answer, ["2026-04-14 Report.pdf"], [])["cited_documents"] == [
+        "2026-04-14 Report.pdf"
+    ]
+    audit = benchmark.audit_citations(answer, ["2026-04-14 Report.pdf", "2026-05-01 Report.pdf"], [])
+    assert audit["cited_documents"] == []
+    assert audit["unresolved_inline_reference_ids"] == ["1"]
+
+
+def test_source_audit_rejects_duplicate_reference_numbers() -> None:
+    answer = "Finding [1].\n\n**References:**\n- [1] First.pdf\n- [1] Second.pdf"
+    audit = benchmark.audit_citations(answer, ["First.pdf", "Second.pdf"], [])
+    assert audit["cited_documents"] == []
+    assert audit["unresolved_inline_reference_ids"] == ["1"]
+
+
+def test_job_status_http_timeout_also_requires_confirmed_cancellation(monkeypatch) -> None:
+    client = benchmark.BenchmarkClient("http://127.0.0.1:3300")
+    request = MagicMock(
+        side_effect=[
+            httpx.ReadTimeout("status request timed out"),
+            {
+                "status": "interrupted",
+                "task_cancelled": True,
+            },
+        ]
+    )
+    monkeypatch.setattr(client, "request", request)
+    try:
+        with pytest.raises(benchmark.WorkflowDeadline) as failure:
+            client.wait_report("job_123", float("inf"))
+        assert benchmark.operational_failure(failure.value) == "timeout"
+    finally:
+        client.http.close()
+    assert request.call_args.args == ("POST", "/api/jobs/async/job/job_123/cancel")

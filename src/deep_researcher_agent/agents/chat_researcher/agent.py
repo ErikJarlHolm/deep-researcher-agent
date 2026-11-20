@@ -25,6 +25,7 @@ This is the main orchestrator agent that coordinates the full research workflow:
 
 import json
 import logging
+import re
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
@@ -43,9 +44,13 @@ from langgraph.types import Command
 from deep_researcher_agent.agents.clarifier.models import ClarifierAgentState
 from deep_researcher_agent.agents.clarifier.models import ClarifierResult
 from deep_researcher_agent.agents.deep_researcher.models import DeepResearchAgentState
+from deep_researcher_agent.agents.document_qa.agent import DocumentBudgetExceeded
+from deep_researcher_agent.agents.document_qa.models import DocumentAnswer
+from deep_researcher_agent.agents.document_qa.models import DocumentQAConfig
 from deep_researcher_agent.agents.shallow_researcher.models import ShallowResearchAgentState
 from deep_researcher_agent.common import get_latest_user_query
 from deep_researcher_agent.common.citation_verification import EmptySourceRegistryError
+from deep_researcher_agent.common.data_source_registry import get_all_sources
 from deep_researcher_agent.common.logging_utils import log_content_metadata
 from deep_researcher_agent.common.logging_utils import log_identifier_ref
 from deep_researcher_agent.relay import run_agent
@@ -62,12 +67,20 @@ except ImportError:
 
 from .models import RESEARCH_WORKFLOW_FAILURE_ERROR
 from .models import ChatResearcherState
+from .models import DepthDecision
 from .models import IntentResult
 from .models import ShallowResult
 from .models import WorkflowFailure
+from .preclassification import get_preclassified_depth
 from .utils import trim_message_history
 
 logger = logging.getLogger(__name__)
+
+_THOROUGH_REQUEST_RE = re.compile(
+    r"\b(?:deep research|thorough (?:research|investigation|analysis)|comprehensive (?:report|investigation)"
+    r"|grundig(?:e)? (?:unders\u00f8kelse|analyse|utredning)|forskningsrapport)\b",
+    re.IGNORECASE,
+)
 
 
 def _report_ref(job_id: str | None) -> str:
@@ -125,6 +138,7 @@ class ChatResearcherAgent:
         *,
         enable_clarifier: bool = True,
         enable_escalation: bool = True,
+        document_qa: DocumentQAConfig | None = None,
         callbacks: list[BaseCallbackHandler] | None = None,
         max_history: int = 5,
         deep_research_job_submitter: Callable[[Any], Awaitable[str]] | None = None,
@@ -162,6 +176,7 @@ class ChatResearcherAgent:
         self.clarifier_fn = clarifier_fn
         self.enable_clarifier = enable_clarifier
         self.enable_escalation = enable_escalation
+        self.document_qa = document_qa
         self.callbacks = callbacks or []
         self.max_history = max_history
         self.deep_research_job_submitter = deep_research_job_submitter
@@ -176,11 +191,43 @@ class ChatResearcherAgent:
 
         self._graph = self._build_graph()
 
+    def _uses_document_qa(self, state: ChatResearcherState) -> bool:
+        if (
+            self.document_qa is None
+            or state.database_name is not None
+            or (
+                (state.active_report_job_id or state.last_report_markdown)
+                and (state.user_intent is None or state.user_intent.target != "new_research")
+            )
+        ):
+            return False
+        selected = state.data_sources
+        if selected is None:
+            selected = [source.id for source in get_all_sources()]
+        return set(selected) == {self.document_qa.source_id}
+
     def _build_graph(self) -> CompiledStateGraph:
         """Build the LangGraph workflow."""
 
         async def intent_classifier_node(state: ChatResearcherState) -> dict[str, Any]:
             try:
+                query = get_latest_user_query(state.messages).strip()
+                meta_only = re.fullmatch(
+                    r"(?:hi|hello|hey|hei|hallo|takk|thanks|help|hjelp|what can you do|hva kan du gj\u00f8re)[!?.]*",
+                    query,
+                    re.IGNORECASE,
+                )
+                thorough_request = state.research_mode == "auto" and _THOROUGH_REQUEST_RE.search(query)
+                if self._uses_document_qa(state) and query and not meta_only and not thorough_request:
+                    depth = (
+                        {"quick": "shallow", "deep": "deep"}.get(state.research_mode)
+                        or get_preclassified_depth()
+                        or "shallow"
+                    )
+                    return {
+                        "user_intent": IntentResult(intent="research"),
+                        "depth_decision": DepthDecision(decision=depth, raw_reasoning="bounded document-first route"),
+                    }
                 return await run_agent(
                     "intent_classifier",
                     lambda: self.intent_classifier_fn(state),
@@ -304,8 +351,21 @@ class ChatResearcherAgent:
                     messages=trimmed_messages,
                     data_sources=state.data_sources,
                     available_documents=state.available_documents,
+                    research_mode=state.research_mode,
+                    document_qa=self.document_qa if self._uses_document_qa(state) else None,
                 )
                 result = await self.shallow_research_fn(shallow_state)
+            except DocumentBudgetExceeded:
+                logger.warning("Document QA budget exhausted before any answer was verified")
+                err_msg = (
+                    "Research could not be completed. Document QA reached its time or work limit "
+                    "before a source-supported answer could be verified."
+                )
+                return {
+                    "messages": [AIMessage(content=err_msg)],
+                    "workflow_outcome": _research_workflow_failure(),
+                    "shallow_result": ShallowResult(answer=err_msg, confidence="high", escalate_to_deep=False),
+                }
             except EmptySourceRegistryError as exc:
                 logger.warning("Shallow research produced no verifiable sources")
                 err_msg = exc.public_response
@@ -373,6 +433,21 @@ class ChatResearcherAgent:
                 None,
             )
             if final_ai_message:
+                document_answer = getattr(result, "document_answer", None)
+                if isinstance(document_answer, DocumentAnswer):
+                    return {
+                        "messages": [final_ai_message],
+                        "shallow_result": ShallowResult(
+                            answer=final_ai_message.content,
+                            confidence="high" if document_answer.status == "complete" else "medium",
+                            escalate_to_deep=document_answer.escalate_to_deep,
+                            escalation_reason=(
+                                "Unresolved document evidence questions after bounded retrieval"
+                                if document_answer.escalate_to_deep
+                                else None
+                            ),
+                        ),
+                    }
                 return {"messages": [final_ai_message], "shallow_result": None}
             if new_messages:
                 return {"messages": [new_messages[-1]], "shallow_result": None}
@@ -574,12 +649,22 @@ class ChatResearcherAgent:
                 return "report_ask"
             if state.user_intent and state.user_intent.target == "hybrid_research":
                 return "hybrid_research"
+            if state.research_mode == "deep":
+                return "clarifier"
+            if state.research_mode == "quick":
+                return "shallow_research"
+            if (
+                self._uses_document_qa(state)
+                and get_preclassified_depth() != "deep"
+                and not _THOROUGH_REQUEST_RE.search(get_latest_user_query(state.messages))
+            ):
+                return "shallow_research"
             if state.depth_decision and state.depth_decision.decision == "deep":
                 return "clarifier"
             return "shallow_research"
 
         def should_escalate(state: ChatResearcherState) -> str:
-            if not self.enable_escalation:
+            if not self.enable_escalation or state.research_mode == "quick":
                 return END
 
             # Respect explicit escalation decision from shallow research.
@@ -675,6 +760,7 @@ class ChatResearcherAgent:
                 "database_name": state.get("database_name"),
                 "catalog_context": None,
                 "catalog_request_id": None,
+                "research_mode": state.get("research_mode", "auto"),
             }
             messages = state.get("messages", [])
         else:
@@ -693,8 +779,18 @@ class ChatResearcherAgent:
                 # Pass through; the keep-if-set reducer preserves a prior in-session report when
                 # this turn supplies None, so report follow-up works across turns without a job.
                 "last_report_markdown": state.last_report_markdown,
+                "research_mode": state.research_mode,
             }
             messages = state.messages
+
+        input_state.update(
+            user_intent=None,
+            depth_decision=None,
+            clarifier_result=None,
+            original_query=None,
+            shallow_result=None,
+            workflow_outcome=None,
+        )
 
         if messages:
             query = messages[-1].content

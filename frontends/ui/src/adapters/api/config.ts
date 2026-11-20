@@ -8,6 +8,8 @@
  * Client-side: Uses same-origin URLs (proxied through UI server)
  */
 
+import { withBasePath } from '@/shared/utils/base-path'
+
 interface ApiConfig {
   baseUrl: string
   chatStreamUrl: string
@@ -41,15 +43,15 @@ export const getWebSocketUrl = async (): Promise<string> => {
 
   // Browser: connect to same origin, UI server proxies to backend
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/websocket`
+  return `${protocol}//${window.location.host}${withBasePath('/websocket')}`
 }
 
 export const apiConfig: ApiConfig = {
   baseUrl: getBaseUrl(),
   chatStreamUrl: `${getBaseUrl()}/chat/stream`,
   generateStreamUrl: `${getBaseUrl()}/generate/stream`,
-  chatApiRoute: '/api/chat',
-  generateApiRoute: '/api/generate',
+  chatApiRoute: withBasePath('/api/chat'),
+  generateApiRoute: withBasePath('/api/generate'),
   websocketUrl: `${getBaseUrl().replace(/^http/, 'ws')}/websocket`,
   healthUrl: `${getBaseUrl()}/health`,
   timeout: 30000,
@@ -61,7 +63,7 @@ export const checkBackendHealth = async (): Promise<boolean> => {
   try {
     // Client-side: use same-origin proxy route (backend may not be publicly exposed)
     // Server-side: hit backend directly
-    const url = isServer ? apiConfig.healthUrl : '/api/health'
+    const url = isServer ? apiConfig.healthUrl : withBasePath('/api/health')
     const response = await fetch(url, {
       method: 'GET',
       signal: AbortSignal.timeout(5000),

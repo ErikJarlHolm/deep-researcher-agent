@@ -1,0 +1,266 @@
+version: 1
+name: rag-climate-documents-only
+
+defaults:
+  source_policy: documents_only
+
+tests:
+  - id: single-source-01-ocean-heat
+    question: Hvor stor andel av den ekstra varmen som lagres i klimasystemet, går ifølge dokumentet til havet?
+    expected_answer: Mer enn 90 prosent av den ekstra varmen går til havet.
+    expected_key_points:
+      - Mer enn 90 prosent
+      - Varmen lagres i havet
+    answer_location: documents
+    required_sources:
+      - 2026-05-22_klimaskepsis.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-02-climate-models
+    question: Hvilke faktorer må inkluderes i klimamodellene for at de skal samsvare med den observerte oppvarmingen?
+    expected_answer: Klimamodellene må inkludere menneskeskapte utslipp for å samsvare med den observerte oppvarmingen.
+    expected_key_points:
+      - Menneskeskapte utslipp
+      - Samsvar med observert oppvarming
+    answer_location: documents
+    required_sources:
+      - 2026-05-22_klimaskepsis.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-03-measure-period
+    question: Hvilken tiårsperiode dekker klimatiltakene som anbefales for norske myndigheter?
+    expected_answer: Klimatiltakene dekker perioden 2026–2036.
+    expected_key_points:
+      - 2026–2036
+    answer_location: documents
+    required_sources:
+      - 2026-05-26_klima_tiltak.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-04-low-cost-measures
+    question: Hvilke tre tiltak trekkes fram som lavkosttiltak med stor effekt på kort sikt?
+    expected_answer: Metanreduksjon, energieffektivisering og elektrifisering av transport trekkes fram som lavkosttiltak med stor effekt på kort sikt.
+    expected_key_points:
+      - Metanreduksjon
+      - Energieffektivisering
+      - Elektrifisering av transport
+    answer_location: documents
+    required_sources:
+      - 2026-05-26_klima_tiltak.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-05-eu-net-zero
+    question: Innen hvilket år har EU lovfestet et mål om netto nullutslipp?
+    expected_answer: EU har lovfestet et mål om netto nullutslipp innen 2050.
+    expected_key_points:
+      - "2050"
+      - Netto nullutslipp
+    answer_location: documents
+    required_sources:
+      - 2026-05-26_klimaengasjement.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-06-capacity-gaps
+    question: Hvilke to forhold mangler lav- og mellominntektsland ofte for å kunne gjennomføre klimatiltak?
+    expected_answer: Lav- og mellominntektsland mangler ofte finansiering og teknisk kapasitet.
+    expected_key_points:
+      - Finansiering
+      - Teknisk kapasitet
+    answer_location: documents
+    required_sources:
+      - 2026-05-26_klimaengasjement.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-07-co2-storage
+    question: Hvor stor årlig kapasitet for CO₂-lagring i eller ved Norge foreslås som mål innen 2035?
+    expected_answer: Det foreslås en kapasitet på minst 30 millioner tonn CO₂ per år innen 2035.
+    expected_key_points:
+      - Minst 30 millioner tonn CO₂ per år
+      - Innen 2035
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Klimatiltak_Norge.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-08-green-shipping-corridors
+    question: Hvor mange internasjonale grønne skipsfartskorridorer fra norske havner foreslås etablert innen 2030?
+    expected_answer: Det foreslås minst fem internasjonale grønne skipsfartskorridorer fra norske havner innen 2030.
+    expected_key_points:
+      - Minst fem
+      - Internasjonale grønne skipsfartskorridorer
+      - Innen 2030
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Klimatiltak_Norge.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-09-most-affected-countries
+    question: Hvilke fem land identifiseres som særlig hardt rammet av klimaeffekter?
+    expected_answer: Filippinene, Bangladesh, Pakistan, Mosambik og Haiti identifiseres som særlig hardt rammet.
+    expected_key_points:
+      - Filippinene
+      - Bangladesh
+      - Pakistan
+      - Mosambik
+      - Haiti
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Mest-rammet-land.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: single-source-10-pakistan-flood
+    question: Omtrent hvor mange mennesker ble berørt av flommen i Pakistan i 2022?
+    expected_answer: Omtrent 33 millioner mennesker ble berørt av flommen i Pakistan i 2022.
+    expected_key_points:
+      - Omtrent 33 millioner mennesker
+      - Flommen i Pakistan i 2022
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Mest-rammet-land.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal kunne hentes direkte fra én kilde.
+
+  - id: multi-source-01-methane
+    question: Hvorfor er raske reduksjoner i metanutslipp viktige, og hvilket konkret mål foreslås for norsk metanintensitet innen 2030?
+    expected_answer: Metanreduksjoner kan gi en rask temperaturgevinst og bidra til å dempe temperaturtoppen fram mot 2050. Det foreslås mer enn 75 prosent reduksjon i metanintensiteten innen 2030.
+    expected_key_points:
+      - Rask temperaturgevinst
+      - Dempe temperaturtoppen fram mot 2050
+      - Mer enn 75 prosent reduksjon i metanintensiteten innen 2030
+    answer_location: documents
+    required_sources:
+      - 2026-05-22_klimaskepsis.pdf
+      - 2026-04-14 Klimatiltak_Norge.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal sammenstille informasjon fra begge de oppførte kildene.
+
+  - id: multi-source-02-affected-countries-support
+    question: Hvilke land omtales både som særlig hardt rammet av klimaeffekter og som eksempler på lav- eller mellominntektsland som kan ha behov for internasjonal støtte til klimatiltak? Forklar også hvorfor støtten er viktig.
+    expected_answer: Dokumentet om de mest rammede landene peker på Filippinene, Bangladesh, Pakistan, Mosambik og Haiti. Dokumentet om klimaengasjement forklarer at lav- og mellominntektsland ofte mangler finansiering og teknisk kapasitet, og at internasjonal klimafinansiering derfor er viktig for å gjennomføre tiltak. Dokumentene fastslår ikke uttrykkelig at alle de fem navngitte landene er eksempler på lav- eller mellominntektsland.
+    expected_key_points:
+      - Filippinene, Bangladesh, Pakistan, Mosambik og Haiti
+      - Lav- og mellominntektsland mangler ofte finansiering
+      - Lav- og mellominntektsland mangler ofte teknisk kapasitet
+      - Internasjonal klimafinansiering er viktig
+      - Kildene kobler ikke uttrykkelig alle fem landene til inntektskategorien
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Mest-rammet-land.doc.pdf
+      - 2026-05-26_klimaengasjement.pdf
+    web_search: forbidden
+    comment: Svaret skal sammenstille kildene uten å fremstille en indirekte kobling som eksplisitt dokumentert.
+
+  - id: multi-source-03-transport-shipping
+    question: Hvilke klimatiltak anbefales for norsk transport og skipsfart, og hvor mange internasjonale grønne skipsfartskorridorer bør Norge ha innen 2030?
+    expected_answer: Norge bør elektrifisere persontransport og lette nyttekjøretøy, bygge ladeinfrastruktur, redusere transportbehovet og utvikle løsninger for tungtransport. For skipsfarten anbefales blant annet landstrøm, batterier, metanol eller ammoniakk og nullutslippskrav i anbud. Målet er minst fem internasjonale grønne korridorer fra norske havner innen 2030.
+    expected_key_points:
+      - Elektrifisering av persontransport og lette nyttekjøretøy
+      - Ladeinfrastruktur og redusert transportbehov
+      - Løsninger for tungtransport
+      - Landstrøm, batterier, metanol eller ammoniakk
+      - Minst fem internasjonale grønne korridorer innen 2030
+    answer_location: documents
+    required_sources:
+      - 2026-05-26_klima_tiltak.pdf
+      - 2026-04-14 Klimatiltak_Norge.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal sammenstille informasjon fra begge de oppførte kildene.
+
+  - id: multi-source-04-bangladesh-finance
+    question: Hvilke klimaeffekter gjør Bangladesh spesielt utsatt, og hvilke norske internasjonale tiltak kan bidra til utslippsreduksjoner i framvoksende økonomier?
+    expected_answer: Bangladesh er utsatt for elve- og kystflom, sykloner, stormflo, havnivåstigning og økende salinisering av jord og grunnvann. Norge kan bidra gjennom målrettet klimafinansiering via Norfund og GCF til kullutfasing, strømnett, energilagring og energieffektivisering i framvoksende økonomier.
+    expected_key_points:
+      - Elve- og kystflom
+      - Sykloner og stormflo
+      - Havnivåstigning
+      - Salinisering av jord og grunnvann
+      - Klimafinansiering via Norfund og GCF
+      - Kullutfasing, strømnett, energilagring og energieffektivisering
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Mest-rammet-land.doc.pdf
+      - 2026-04-14 Klimatiltak_Norge.doc.pdf
+    web_search: forbidden
+    comment: Svaret skal sammenstille informasjon fra begge de oppførte kildene.
+
+  - id: multi-source-05-targets-versus-action
+    question: Hva er forskjellen mellom å kunngjøre et klimamål og å gjennomføre effektive klimatiltak, og hvilke indikatorer foreslås for å måle Norges faktiske framgang?
+    expected_answer: Et kunngjort mål viser politisk vilje, men gir ikke nødvendigvis reelle utslippsreduksjoner dersom politikk, finansiering og gjennomføring mangler. Norges framgang bør måles med konkrete indikatorer som tonn CO₂-ekvivalenter, andel fornybar kraft, antall elektriske kjøretøy og restaurert areal, og tiltakene bør vurderes årlig.
+    expected_key_points:
+      - Et kunngjort mål viser politisk vilje
+      - Reelle utslippsreduksjoner krever politikk, finansiering og gjennomføring
+      - Tonn CO₂-ekvivalenter
+      - Andel fornybar kraft
+      - Antall elektriske kjøretøy
+      - Restaurert areal
+      - Årlig vurdering
+    answer_location: documents
+    required_sources:
+      - 2026-05-26_klimaengasjement.pdf
+      - 2026-05-26_klima_tiltak.pdf
+    web_search: forbidden
+    comment: Svaret skal sammenstille informasjon fra begge de oppførte kildene.
+
+  - id: absent-01-norway-prime-minister
+    question: Hvem var Norges statsminister 1. januar 1990?
+    expected_answer: Dette fremgår ikke av de fem kildedokumentene, og spørsmålet kan derfor ikke besvares fra dokumentgrunnlaget.
+    expected_key_points:
+      - Informasjonen finnes ikke i dokumentene
+      - Agenten skal ikke bruke generell kunnskap eller gjette
+    answer_location: absent
+    required_sources: []
+    web_search: forbidden
+    comment: Spørsmålet er med vilje ikke besvart i kildedokumentene.
+
+  - id: absent-02-mars-moons
+    question: Hva heter de to månene til Mars?
+    expected_answer: Dette fremgår ikke av de fem kildedokumentene, og spørsmålet kan derfor ikke besvares fra dokumentgrunnlaget.
+    expected_key_points:
+      - Informasjonen finnes ikke i dokumentene
+      - Agenten skal ikke bruke generell kunnskap eller gjette
+    answer_location: absent
+    required_sources: []
+    web_search: forbidden
+    comment: Spørsmålet er med vilje ikke besvart i kildedokumentene.
+
+  - id: absent-03-author-phone
+    question: Hva er det private telefonnummeret til forfatteren av dokumentet om klimaskepsis?
+    expected_answer: Dette fremgår ikke av de fem kildedokumentene, og spørsmålet kan derfor ikke besvares fra dokumentgrunnlaget.
+    expected_key_points:
+      - Telefonnummeret finnes ikke i dokumentene
+      - Agenten skal ikke finne på personopplysninger
+    answer_location: absent
+    required_sources: []
+    web_search: forbidden
+    comment: Spørsmålet er med vilje ikke besvart i kildedokumentene.
+
+  - id: absent-04-exact-2040-temperature
+    question: Hva blir den nøyaktige gjennomsnittstemperaturen i Oslo klokken 12 den 17. juni 2040?
+    expected_answer: Dette fremgår ikke av de fem kildedokumentene, og et slikt nøyaktig framtidig værutfall kan ikke besvares fra dokumentgrunnlaget.
+    expected_key_points:
+      - Den nøyaktige temperaturen finnes ikke i dokumentene
+      - Agenten skal ikke gjette
+    answer_location: absent
+    required_sources: []
+    web_search: forbidden
+    comment: Spørsmålet er med vilje ikke besvart i kildedokumentene.
+
+  - id: absent-05-company-emissions
+    question: Hvor store var de samlede klimagassutslippene til Microsoft i kalenderåret 2012?
+    expected_answer: Dette fremgår ikke av de fem kildedokumentene, og spørsmålet kan derfor ikke besvares fra dokumentgrunnlaget.
+    expected_key_points:
+      - Informasjonen finnes ikke i dokumentene
+      - Agenten skal ikke bruke generell kunnskap eller gjette
+    answer_location: absent
+    required_sources: []
+    web_search: forbidden
+    comment: Spørsmålet er med vilje ikke besvart i kildedokumentene.

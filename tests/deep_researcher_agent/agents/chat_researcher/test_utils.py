@@ -27,8 +27,37 @@ from pydantic import ValidationError
 from deep_researcher_agent.agents.chat_researcher.utils import _extract_database_name_from_request_metadata
 from deep_researcher_agent.agents.chat_researcher.utils import _extract_query_and_sources
 from deep_researcher_agent.agents.chat_researcher.utils import _extract_query_context
+from deep_researcher_agent.agents.chat_researcher.utils import _extract_research_mode_from_request_metadata
 from deep_researcher_agent.agents.chat_researcher.utils import _extract_text_from_message
 from deep_researcher_agent.agents.chat_researcher.utils import trim_message_history
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"query":"Investigate the policy","research_mode":"deep"}',
+        {"text": "Investigate the policy", "research_mode": "deep"},
+        {"content": {"messages": [{"role": "user", "content": "Investigate"}], "research_mode": "deep"}},
+        SimpleNamespace(messages=[SimpleNamespace(role="user", content="Investigate")], research_mode="deep"),
+    ],
+)
+def test_extract_explicit_research_mode(payload):
+    assert _extract_query_context(payload).research_mode == "deep"
+
+
+def test_top_level_research_mode_overrides_inline_context():
+    payload = {"text": '{"query":"Investigate","research_mode":"deep"}', "research_mode": "quick"}
+    assert _extract_query_context(payload).research_mode == "quick"
+
+
+def test_invalid_research_mode_is_rejected():
+    with pytest.raises(ValidationError):
+        _extract_query_context({"text": "Investigate", "research_mode": "unbounded"})
+
+
+def test_research_mode_survives_nat_request_metadata():
+    metadata = SimpleNamespace(payload={"text": "Investigate", "research_mode": "quick"})
+    assert _extract_research_mode_from_request_metadata(metadata) == "quick"
 
 
 class TestTrimMessageHistory:

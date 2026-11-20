@@ -247,21 +247,22 @@ project-name change; its value is not part of the Git update.
 3. Stop other GPU model services before starting this stack.
 4. Open **Environment > Compose** and use **Start**. Workbench passes its
    sensitive variables to Compose for interpolation and displays service logs.
+   The Workbench overlay builds the local backend and frontend images, rather
+   than silently using the published images that lack local changes.
+5. Once the services are ready, open **Applications > Deepak**. The project
+   application forwards its port 3000 to the Compose frontend on port 3000.
+   Workbench supplies its own remote proxy connection; a separate terminal SSH
+   tunnel is not required.
 
-The current frontend expects to be served at the URL root. Workbench's
-path-prefixed frontend link can display unstyled HTML and fail to load the
-client scripts and API routes, even with prefix trimming enabled. For a remote
-DGX Spark, open an SSH tunnel from a terminal on the computer running your
-browser, replacing the SSH port, user, and host:
-
-```bash
-ssh -p SSH_PORT -N -o ExitOnForwardFailure=yes -L 127.0.0.1:3300:127.0.0.1:3000 YOUR_USER@YOUR_DGX_HOST
-```
-
-Keep the terminal open and use `http://127.0.0.1:3300`. Use port 22 unless your
-SSH server uses a different port. This forwards the frontend's default host
-port 3000; adjust the destination port if you changed `FRONTEND_PORT`. No model
-ports need to be published.
+The frontend is built for the project application's Workbench path. If the
+Workbench project name or application name is changed, update
+`DEEPAK_BASE_PATH` to `/projects/<project-name>/applications/<app-name>` in
+the Workbench environment and rebuild the frontend. The same value must be used
+at build time and runtime. The host's frontend port remains configurable with
+`FRONTEND_PORT`; it does not change the project's internal port 3000.
+If OAuth is enabled, pass the OAuth settings to the frontend container and set
+`NEXTAUTH_URL` to the browser-visible Workbench origin followed by the same base
+path and `/api/auth`. Configure the identity provider's callback URL accordingly.
 
 This path does not require `deploy/.env`; the Workbench overlay disables the
 backend's environment-file loading. Leave the key out of `.env` and

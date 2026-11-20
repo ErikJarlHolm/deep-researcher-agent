@@ -22,6 +22,7 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
+from deep_researcher_agent.agents.document_qa.models import ResearchMode
 from deep_researcher_agent.knowledge import AvailableDocument
 
 from ..request_context import DatabaseName
@@ -92,3 +93,4 @@ class ChatResearcherState(BaseModel):
     # across turns by the keep-if-set reducer so report follow-up works without an async job.
     last_report_markdown: Annotated[str | None, _keep_if_set] = None
     workflow_outcome: WorkflowOutcome | None = None
+    research_mode: ResearchMode = "auto"

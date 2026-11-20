@@ -9,6 +9,7 @@
  */
 
 import { apiConfig } from './config'
+import { withBasePath } from '@/shared/utils/base-path'
 
 const getBaseUrl = (): string => {
   const isBrowser = typeof window !== 'undefined'
@@ -125,7 +126,7 @@ export const createDataSourcesClient = (options: DataSourcesClientOptions = {}) 
      */
     async getDataSources(signal?: AbortSignal): Promise<DataSourcesResponse> {
       const baseUrl = getBaseUrl()
-      const url = baseUrl ? `${baseUrl}/v1/data_sources` : '/api/v1/data_sources'
+      const url = baseUrl ? `${baseUrl}/v1/data_sources` : withBasePath('/api/v1/data_sources')
       const response = await fetch(url, {
         method: 'GET',
         headers: getHeaders(),

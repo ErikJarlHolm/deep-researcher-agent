@@ -73,6 +73,22 @@ environment:
     compose_file_path: compose.yaml
 execution:
     apps:
+        - name: Deepak
+          type: custom
+          class: webapp
+          start_command: python3 /project/scripts/deepak_proxy.py > /tmp/deepak-proxy.log 2>&1 &
+          health_check_command: 'curl -fsS -o /dev/null "http://localhost:3000\$PROXY_PREFIX/"'
+          stop_command: python3 /project/scripts/deepak_proxy.py --stop
+          user_msg: ""
+          logfile_path: /tmp/deepak-proxy.log
+          timeout_seconds: 120
+          icon_url: ""
+          webapp_options:
+            autolaunch: true
+            port: "3000"
+            proxy:
+              trim_prefix: false
+            url: http://localhost:3000/
         - name: VS Code
           type: vs-code
           class: native

@@ -15,6 +15,7 @@ import { useSession as useNextAuthSession, signIn, signOut } from 'next-auth/rea
 import { useAppConfig } from '@/shared/context'
 import { trackRumAction } from '@/shared/utils/rum'
 import type { AuthContext } from './types'
+import { withBasePath } from '@/shared/utils/base-path'
 
 /**
  * Default user returned when authentication is disabled.
@@ -60,11 +61,11 @@ export const useAuth = (): AuthContext => {
   }
 
   const handleSignIn = useCallback(async (): Promise<void> => {
-    await signIn(authProviderId, { callbackUrl: '/' })
+    await signIn(authProviderId, { callbackUrl: withBasePath('/') })
   }, [authProviderId])
 
   const handleSignOut = useCallback(async (): Promise<void> => {
-    await signOut({ callbackUrl: '/auth/signin' })
+    await signOut({ callbackUrl: withBasePath('/auth/signin') })
   }, [])
 
   useEffect(() => {

@@ -14,6 +14,7 @@ import { type ReactNode, Suspense, useEffect } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Flex, Text, Button, Card, Stack, Spinner } from '@/adapters/ui'
 import { useAppConfig } from '@/shared/context'
+import { withBasePath } from '@/shared/utils/base-path'
 
 const errorMessages: Record<string, string> = {
   Configuration: 'There is a problem with the server configuration.',
@@ -49,11 +50,11 @@ const ErrorContent = (): ReactNode => {
   }
 
   const handleRetry = (): void => {
-    window.location.href = '/auth/signin'
+    window.location.href = withBasePath('/auth/signin')
   }
 
   const handleHome = (): void => {
-    window.location.href = '/'
+    window.location.href = withBasePath('/')
   }
 
   return (

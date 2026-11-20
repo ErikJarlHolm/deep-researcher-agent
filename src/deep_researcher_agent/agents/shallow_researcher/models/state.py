@@ -22,6 +22,9 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
+from deep_researcher_agent.agents.document_qa.models import DocumentAnswer
+from deep_researcher_agent.agents.document_qa.models import DocumentQAConfig
+from deep_researcher_agent.agents.document_qa.models import ResearchMode
 from deep_researcher_agent.knowledge import AvailableDocument
 
 
@@ -46,3 +49,6 @@ class ShallowResearchAgentState(BaseModel):
     available_documents: list[AvailableDocument] | None = None
     collection_name: str | None = None
     tool_iterations: int = 0
+    research_mode: ResearchMode = "auto"
+    document_qa: DocumentQAConfig | None = None
+    document_answer: DocumentAnswer | None = None

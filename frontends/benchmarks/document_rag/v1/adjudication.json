@@ -1,0 +1,28 @@
+{
+  "version": "1.1",
+  "scope": "Quality review of frozen v1 executions; never modify original suite or result bytes",
+  "errata": [
+    {
+      "case_id": "multi-source-01-methane",
+      "field": "required_sources",
+      "original_required_sources": [
+        "2026-05-22_klimaskepsis.pdf",
+        "2026-04-14 Klimatiltak_Norge.doc.pdf"
+      ],
+      "accepted_supporting_source_sets": [
+        [
+          "2026-04-14 Klimatiltak_Norge.doc.pdf"
+        ]
+      ],
+      "evidence": "Klimatiltak_Norge physical p.3 describes short-term cooling; p.4 states rapid temperature benefit, reduction of the peak towards 2050, and >75% methane-intensity reduction by 2030. The complete six-page skepticism PDF does not discuss methane.",
+      "review_rule": "Do not penalize omission of the skepticism PDF when the answer is supported by the Norway PDF. Keep missing-source structural diagnostics unchanged and annotate this known benchmark defect. This is not a genuine multi-source requirement.",
+      "unchanged": [
+        "question",
+        "expected_answer",
+        "expected_key_points",
+        "strict >75% qualification",
+        "document corpus"
+      ]
+    }
+  ]
+}

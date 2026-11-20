@@ -13,6 +13,7 @@
 
 import { apiConfig } from './config'
 import { artifactContentPath } from '@/shared/utils/artifact-url'
+import { withBasePath } from '@/shared/utils/base-path'
 
 // ============================================================
 // Types
@@ -349,9 +350,8 @@ export const createDeepResearchClient = (options: DeepResearchStreamOptions): De
   const buildStreamUrl = (): string => {
     // Use local API route in browser, direct backend URL on server
     const isBrowser = typeof window !== 'undefined'
-    const baseUrl = isBrowser ? '' : apiConfig.baseUrl
-
-    let url = `${baseUrl}/api/jobs/async/job/${jobId}/stream`
+    const path = `/api/jobs/async/job/${jobId}/stream`
+    let url = isBrowser ? withBasePath(path) : `${apiConfig.baseUrl}${path}`
 
     if (lastReceivedEventId) {
       url += `/${lastReceivedEventId}`
@@ -713,7 +713,7 @@ export const createDeepResearchClient = (options: DeepResearchStreamOptions): De
  */
 const getDeepResearchBaseUrl = (): string => {
   const isBrowser = typeof window !== 'undefined'
-  return isBrowser ? '/api/jobs/async' : `${apiConfig.baseUrl}/v1/jobs/async`
+  return isBrowser ? withBasePath('/api/jobs/async') : `${apiConfig.baseUrl}/v1/jobs/async`
 }
 
 const getDeepResearchErrorDetails = async (response: Response): Promise<string | null> => {

@@ -18,13 +18,14 @@ import { Providers } from './providers'
 import type { AppConfig } from '@/shared/context'
 import { getFileUploadConfigFromEnv } from '@/shared/config/file-upload'
 import { isAuthRequired, AUTH_PROVIDER_ID, TOKEN_REFRESH_BUFFER_SECONDS } from '@/adapters/auth/config'
+import { withBasePath } from '@/shared/utils/base-path'
 import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Deep Researcher Agent',
   description: 'AI-powered research assistant',
   icons: {
-    icon: '/favicon.ico',
+    icon: withBasePath('/favicon.ico'),
   },
 }
 

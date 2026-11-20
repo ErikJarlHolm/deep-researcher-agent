@@ -10,9 +10,11 @@
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 import time
+import unicodedata
 import uuid
 from contextlib import ExitStack
 from datetime import UTC
@@ -31,11 +33,92 @@ FAILURE_MESSAGES = (
     "Research could not be completed.",
     "I'm unable to reach the model service right now.",
     "The model service took too long to respond",
+    "An error occurred while researching your question. Please try again.",
 )
+PROTOCOL_VERSION = 2
+REFERENCE_HEADING = re.compile(r"(?im)^\s*(?:\*{0,2}|#{1,6}\s*)(?:references|referanser|sources|kilder):?\*{0,2}\s*$")
+REFERENCE_LINE = re.compile(r"(?m)^\s*(?:[-*]\s*)?\[(\d+)\]\s+(.+)$")
+INLINE_CITATION = re.compile(r"\[(\d+)\]")
 
 
 class WorkflowFailed(RuntimeError):
     """The workflow terminated with an explicit failure, not a usable answer."""
+
+
+class WorkflowDeadline(WorkflowFailed):
+    """A research job was cancelled after exceeding its time budget."""
+
+
+def frozen_manifest(suite_path: Path, documents: list[Path], suite: dict) -> dict:
+    return {
+        "version": 1,
+        "suite_sha256": hashlib.sha256(suite_path.read_bytes()).hexdigest(),
+        "documents_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in documents},
+        "case_ids": [case["id"] for case in suite["tests"]],
+        "source_policy": "documents_only",
+    }
+
+
+def freeze_bundle(destination: Path, suite_path: Path, documents: list[Path], suite: dict) -> None:
+    """Preserve exact suite bytes and document identities without distributing PDFs."""
+    manifest = frozen_manifest(suite_path, documents, suite)
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "suite.yaml").write_bytes(suite_path.read_bytes())
+    save_report(destination / "manifest.json", manifest)
+
+
+def audit_citations(answer: str, document_names: list[str], required_sources: list[str]) -> dict:
+    """Resolve inline references to unambiguous corpus identities, not semantic support."""
+    normalized = unicodedata.normalize("NFKC", answer).casefold()
+    heading = REFERENCE_HEADING.search(normalized)
+    prose = normalized[: heading.start()] if heading else normalized
+    inline_ids = set(INLINE_CITATION.findall(prose))
+    definitions: dict[str, list[str]] = {}
+    if heading:
+        for number, target in REFERENCE_LINE.findall(normalized[heading.end() :]):
+            definitions.setdefault(number, []).append(target)
+
+    aliases: dict[str, set[str]] = {}
+    for name in document_names:
+        canonical = unicodedata.normalize("NFKC", name).casefold()
+        for alias in (canonical, re.sub(r"^\d{4}-\d{2}-\d{2}[ _-]+", "", canonical)):
+            aliases.setdefault(alias, set()).add(name)
+
+    resolved: dict[str, list[str]] = {}
+    unresolved = []
+    for number in sorted(inline_ids):
+        targets = definitions.get(number, [])
+        if len(targets) != 1:
+            unresolved.append(number)
+            continue
+        identities: set[str] = set()
+        for alias, names in aliases.items():
+            if re.search(rf"(?<![\w.-]){re.escape(alias)}(?![\w.-])", targets[0]):
+                identities.update(names)
+        if len(identities) == 1:
+            resolved[number] = sorted(identities)
+        else:
+            unresolved.append(number)
+    cited = sorted({name for names in resolved.values() for name in names})
+    return {
+        "inline_reference_ids": sorted(inline_ids),
+        "unresolved_inline_reference_ids": unresolved,
+        "resolved_references": resolved,
+        "cited_documents": cited,
+        "required_documents_not_cited": sorted(set(required_sources) - set(cited)),
+        "uncited_reference_ids": sorted(set(definitions) - inline_ids),
+        "semantic_source_support": "not_reviewed",
+    }
+
+
+def operational_failure(exc: Exception) -> str:
+    if isinstance(exc, (WorkflowDeadline, TimeoutError, httpx.TimeoutException)):
+        return "timeout"
+    if isinstance(exc, WorkflowFailed):
+        return "workflow_failure"
+    if isinstance(exc, (httpx.HTTPError, WebSocketException, OSError)):
+        return "transport_error"
+    return "protocol_or_runner_error"
 
 
 def load_suite(path: Path, documents_dir: Path) -> tuple[dict, list[Path]]:
@@ -195,20 +278,21 @@ class BenchmarkClient:
                 if job["status"] not in ("submitted", "running"):
                     raise RuntimeError(f"Research job did not succeed: {json.dumps(job, ensure_ascii=False)}")
                 time.sleep(min(2, remaining(deadline)))
-        except TimeoutError as exc:
+        except (TimeoutError, httpx.TimeoutException) as exc:
             cancellation = self.request("POST", f"{path}/cancel")
             if cancellation.get("status") != "interrupted" or cancellation.get("task_cancelled") is not True:
                 raise RuntimeError(
                     f"Research job {job_id} exceeded its deadline; task cancellation is unconfirmed"
                 ) from exc
-            raise WorkflowFailed("Research job exceeded its deadline and was interrupted") from exc
+            raise WorkflowDeadline("Research job exceeded its deadline and was interrupted") from exc
 
     def run_case(self, case: dict, documents: list[Path], timeout: float) -> dict:
         collection = f"eval_{uuid.uuid4().hex}"
         self.active_collection = collection
         self.active_job_id = None
         self.active_events = []
-        deadline = time.monotonic() + timeout
+        case_started = time.monotonic()
+        deadline = case_started + timeout
         self.request(
             "POST",
             "/api/v1/collections",
@@ -251,15 +335,23 @@ class BenchmarkClient:
         result = {
             **case,
             "status": "answered",
+            "execution_status": "completed",
             "answer": answer,
+            "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
             "latency_seconds": round(elapsed, 2),
+            "end_to_end_seconds": round(time.monotonic() - case_started, 2),
             "missing_source_mentions": missing_mentions,
-            "quality_status": "not_scored",
+            "quality_status": "needs_review",
+            "citation_audit": audit_citations(answer, [path.name for path in documents], required),
             "collection": collection,
             "deep_research_job_id": job_id,
             "events": events,
         }
-        self.request("DELETE", f"/api/v1/collections/{collection}")
+        try:
+            self.request("DELETE", f"/api/v1/collections/{collection}")
+        except httpx.HTTPError as exc:
+            result["cleanup_error"] = str(exc)
+            print(f"Collection cleanup failed: {collection}: {exc}", file=sys.stderr, flush=True)
         return result
 
 
@@ -274,18 +366,38 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", required=True, type=Path)
     parser.add_argument("--documents-dir", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--label", required=True, help="Model/configuration label; must match when resuming")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--label", help="Model/configuration label; must match when resuming")
+    parser.add_argument("--freeze-dir", type=Path, help="Freeze exact suite bytes and PDF hashes, then exit offline")
+    parser.add_argument("--manifest", type=Path, help="Verify frozen suite and document identities before execution")
+    parser.add_argument(
+        "--runtime-file", action="append", type=Path, default=[], help="Hash config/code/prompt; repeatable"
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1:3300")
     parser.add_argument("--timeout", type=float, default=900, help="Maximum seconds per case, including ingestion")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    if args.timeout <= 0:
-        parser.error("--timeout must be positive")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be finite and positive")
     suite, documents = load_suite(args.suite, args.documents_dir)
+    manifest = frozen_manifest(args.suite, documents, suite)
+    if args.manifest and json.loads(args.manifest.read_text(encoding="utf-8")) != manifest:
+        parser.error("Frozen manifest does not match the suite or documents; create a new version, not a replacement")
+    if args.freeze_dir:
+        freeze_bundle(args.freeze_dir, args.suite, documents, suite)
+        return 0
+    if not args.output or not args.label:
+        parser.error("--output and --label are required for execution")
+    if len({path.name for path in args.runtime_file}) != len(args.runtime_file):
+        parser.error("--runtime-file basenames must be unique")
     identity = {
-        "suite_sha256": hashlib.sha256(args.suite.read_bytes()).hexdigest(),
-        "documents_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in documents},
+        "protocol_version": PROTOCOL_VERSION,
+        "suite_sha256": manifest["suite_sha256"],
+        "documents_sha256": manifest["documents_sha256"],
+        "runtime_files_sha256": {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in args.runtime_file
+        },
+        "timeout_seconds": args.timeout,
         "label": args.label,
         "base_url": args.base_url,
         "source_policy": "documents_only",
@@ -311,11 +423,14 @@ def main() -> int:
             started = time.monotonic()
             try:
                 result = client.run_case(case, documents, args.timeout)
-            except (httpx.HTTPError, WebSocketException, TimeoutError, ValueError, RuntimeError) as exc:
+            except (httpx.HTTPError, WebSocketException, OSError, TimeoutError, ValueError, RuntimeError) as exc:
                 report["cases"].append(
                     {
                         **case,
                         "status": "error",
+                        "execution_status": "failed",
+                        "failure_category": operational_failure(exc),
+                        "quality_status": "not_applicable",
                         "error": str(exc),
                         "collection": client.active_collection,
                         "deep_research_job_id": client.active_job_id,

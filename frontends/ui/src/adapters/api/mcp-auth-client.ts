@@ -11,6 +11,7 @@
  */
 
 import { apiConfig } from './config'
+import { withBasePath } from '@/shared/utils/base-path'
 import type { PerUserAuthStatus } from './data-sources-client'
 
 const getBaseUrl = (): string => {
@@ -20,7 +21,7 @@ const getBaseUrl = (): string => {
 
 const apiUrl = (path: string): string => {
   const baseUrl = getBaseUrl()
-  return baseUrl ? `${baseUrl}${path}` : `/api${path}`
+  return baseUrl ? `${baseUrl}${path}` : withBasePath(`/api${path}`)
 }
 
 // ============================================================================
