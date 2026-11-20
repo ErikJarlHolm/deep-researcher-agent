@@ -87,7 +87,7 @@ async def wait_for_disconnect(receive: Receive) -> None:
 def create_app() -> FastAPI:
     token = os.environ.get("DOCUMENT_PREVIEW_TOKEN")
     bearer = HTTPBearer(auto_error=False)
-    researcher: DocumentResearcher
+    researcher: DocumentResearcher | None = None
     active = asyncio.Lock()
     config = DocumentQAConfig()
 
@@ -154,6 +154,8 @@ def create_app() -> FastAPI:
             yield
 
     async def run(question: DocumentQuestion) -> DocumentAnswer:
+        if researcher is None:
+            raise HTTPException(503, "Document preview is not ready")
         budget = config.quick_seconds if question.mode == "quick" else config.synthesis_seconds
         try:
             # The core handles expected budget exhaustion and may return verified partial claims.
