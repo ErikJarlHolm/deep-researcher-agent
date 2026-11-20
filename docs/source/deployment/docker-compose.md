@@ -284,6 +284,48 @@ For Workbench setup details, see NVIDIA's
 [runtime settings](https://docs.nvidia.com/ai-workbench/how-to/environments/runtime-configuration)
 and [multi-container guide](https://docs.nvidia.com/ai-workbench/how-to/environments/multi-container).
 
+##### Parallel NAT-free document preview
+
+The preview runs separately from the Deepak app and only answers questions
+from its own test collection. It does not expose uploads, existing collections,
+or deep research. Use only synthetic fixtures. On the Workbench host:
+
+```bash
+docker build -f deploy/document_preview.Dockerfile -t deepak-document-preview:local .
+docker volume create deepak-document-preview-data
+```
+
+With the model containers running on the shared `workbench` network, set
+`QWEN_CONTAINER` and `EMBEDDER_CONTAINER` to their Docker container names (not
+the service aliases). Set `FIXTURE` to the absolute path of a local `.txt`
+fixture readable by the container user. Set and export `DOCUMENT_PREVIEW_TOKEN` to a
+private random value without putting it into shell history or version control.
+
+```bash
+docker run --rm --network workbench \
+  -e DOCUMENT_PREVIEW_EMBED_URL="http://${EMBEDDER_CONTAINER}:8000/v1" \
+  --mount type=volume,source=deepak-document-preview-data,target=/data \
+  --mount "type=bind,source=${FIXTURE},target=/fixture/fixture.txt,readonly" \
+  --entrypoint python deepak-document-preview:local \
+  /app/seed_document_preview.py /fixture/fixture.txt
+
+docker run -d --name deepak-document-preview --network workbench \
+  -p 127.0.0.1:38080:8000 -e DOCUMENT_PREVIEW_TOKEN \
+  -e DOCUMENT_PREVIEW_MODEL_URL="http://${QWEN_CONTAINER}:8000/v1" \
+  -e DOCUMENT_PREVIEW_EMBED_URL="http://${EMBEDDER_CONTAINER}:8000/v1" \
+  --mount type=volume,source=deepak-document-preview-data,target=/data \
+  deepak-document-preview:local
+
+curl -fsS http://127.0.0.1:38080/v1/documents/answer \
+  -H "Authorization: Bearer ${DOCUMENT_PREVIEW_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  --data '{"question":"What does the test document say about retention?","mode":"quick"}'
+```
+
+Run comparisons serially: the preview and Deepak share the model GPU. The
+preview API returns the completed answer with citations and elapsed time; it
+does not stream tokens or replace the Workbench button.
+
 #### Standalone Docker Compose
 
 The following commands are for a host terminal outside the Workbench-managed

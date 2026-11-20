@@ -15,10 +15,15 @@
 
 """Agents for the Deep Researcher Agent Blueprint."""
 
-from .chat_researcher import chat_deepresearcher_agent
-from .data_science import data_science_agent
-from .deep_researcher import deep_research_agent
-from .shallow_researcher import shallow_research_agent
+from importlib import import_module
+from typing import TYPE_CHECKING
+from typing import Any
+
+if TYPE_CHECKING:
+    from .chat_researcher import chat_deepresearcher_agent
+    from .data_science import data_science_agent
+    from .deep_researcher import deep_research_agent
+    from .shallow_researcher import shallow_research_agent
 
 __all__ = [
     "chat_deepresearcher_agent",
@@ -26,3 +31,18 @@ __all__ = [
     "shallow_research_agent",
     "deep_research_agent",
 ]
+
+_EXPORT_MODULES = {
+    "chat_deepresearcher_agent": ".chat_researcher",
+    "data_science_agent": ".data_science",
+    "shallow_research_agent": ".shallow_researcher",
+    "deep_research_agent": ".deep_researcher",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORT_MODULES[name], __name__), name)
+    globals()[name] = value
+    return value

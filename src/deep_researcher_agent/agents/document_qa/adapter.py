@@ -15,7 +15,7 @@ from deep_researcher_agent.agents.shallow_researcher.models import ShallowResear
 from deep_researcher_agent.common import get_latest_user_query
 from deep_researcher_agent.common import load_prompt
 from deep_researcher_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
-from deep_researcher_agent.common.evidence import split_evidence_content
+from deep_researcher_agent.evidence import split_evidence_content
 from deep_researcher_agent.knowledge.schema import RetrievalResult
 from deep_researcher_agent.relay import ainvoke_with_relay
 

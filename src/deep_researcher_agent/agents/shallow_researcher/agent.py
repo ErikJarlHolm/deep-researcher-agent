@@ -51,9 +51,9 @@ from deep_researcher_agent.common.citation_verification import extract_sources_f
 from deep_researcher_agent.common.citation_verification import get_session_registry
 from deep_researcher_agent.common.citation_verification import sanitize_report
 from deep_researcher_agent.common.citation_verification import verify_citations
-from deep_researcher_agent.common.evidence import split_evidence_content
 from deep_researcher_agent.common.json_utils import extract_json
 from deep_researcher_agent.common.logging_utils import log_content_metadata
+from deep_researcher_agent.evidence import split_evidence_content
 from deep_researcher_agent.relay import ainvoke_with_relay
 from deep_researcher_agent.relay import run_agent
 from deep_researcher_agent.relay.runtime import awrap_tool_call_with_relay

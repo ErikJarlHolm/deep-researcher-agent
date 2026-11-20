@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Exact source-passage splitting shared by document answer verifiers."""
+"""Exact source-passage splitting shared by both research runtimes."""
 
 
 def split_evidence_content(content: str, *, max_chars: int = 1200, overlap: int = 150) -> list[str]:
