@@ -244,6 +244,19 @@ async def test_truncated_json_gets_one_compact_protocol_repair():
 
 
 @pytest.mark.asyncio
+async def test_overlong_followup_list_is_repaired_before_abstaining():
+    agent, generate, search = researcher(
+        [draft(queries=["one", "two", "three"]), draft(queries=["one", "two"]), draft()]
+    )
+    result = await agent.run("What detail have the documents not provided?")
+    assert result.status == "not_found"
+    assert result.model_calls == 3
+    assert [call.args[0] for call in search.await_args_list][1:] == ["one", "two"]
+    repair = json.loads(generate.await_args_list[1].args[1])["format_correction"]
+    assert "at most 2 entries" in repair
+
+
+@pytest.mark.asyncio
 async def test_persistently_invalid_json_is_an_operational_error_not_an_abstention():
     agent, generate, _ = researcher(["not-json", "still-not-json"])
     with pytest.raises(DocumentResponseError, match="after repair"):

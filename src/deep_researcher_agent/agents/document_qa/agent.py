@@ -237,20 +237,31 @@ class DocumentResearcher:
                 try:
                     return schema.model_validate_json(raw)
                 except ValidationError as error:
+                    error_types = sorted({item["type"] for item in error.errors(include_input=False)})
                     logger.warning(
-                        "Document QA invalid response schema=%s attempt=%d errors=%d",
+                        "Document QA invalid response schema=%s attempt=%d errors=%d types=%s",
                         schema.__name__,
                         attempt + 1,
                         error.error_count(),
+                        ",".join(error_types),
                     )
                     if attempt:
                         raise DocumentResponseError(f"Invalid {schema.__name__} response after repair") from error
+                    limits = (
+                        "Draft limits: claims has at most 12 entries (6 in quick effort); each claim has "
+                        "nonempty text of at most 800 characters and 1-4 passage IDs. search_queries "
+                        "has at most 2 entries. If no claim is supported, use claims: []; never fill it "
+                        "with speculation. If no useful new search remains, use search_queries: []."
+                        if schema is Draft
+                        else "Verdict limits: supported_claim_ids has at most 12 integer entries, "
+                        "and answer_complete must be a boolean."
+                    )
                     payload = {
                         **payload,
                         "format_correction": (
-                            "The preceding response was not valid JSON for the required schema. "
-                            "Return only the requested compact JSON object; "
-                            "do not repeat passages or explain decisions."
+                            "The preceding response did not satisfy the required JSON schema. "
+                            f"Return only the requested compact JSON object. {limits} "
+                            "Do not repeat passages or explain decisions."
                         ),
                     }
             raise AssertionError("unreachable")

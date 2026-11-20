@@ -21,10 +21,13 @@ Omit irrelevant contact details even if they are present in the passages.
 
 Answer every part that evidence supports, even if other parts cannot be answered.
 Remove unsupported optional detail rather than rejecting a supported main answer.
-An empty claims list is appropriate when no supplied evidence answers the question.
+If no supplied passage supports an answer and no new search is justified, return:
+{"claims":[],"search_queries":[],"needs_deep_research":false}
+Do not invent claims or search queries to fill empty lists.
 Do not assert that a whole collection lacks information just because retrieval
-did not return it. For missing parts, propose at most 2 short, complementary
-search queries derived from the question. Do not search for an assumed answer.
+did not return it. The search_queries array can contain 0, 1, or 2 strings, never more.
+For missing parts, keep only the best complementary queries derived from the
+question. Do not search for an assumed answer.
 Return an empty search_queries list if no additional targeted search is justified.
 
 needs_deep_research is true ONLY when the task needs a sustained investigation:

@@ -101,7 +101,8 @@ def test_suite_requires_all_original_documents(tmp_path: Path) -> None:
         benchmark.load_suite(suite_path, tmp_path)
 
 
-def test_cases_are_isolated_and_reference_answers_are_not_sent(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("expect_deep_job", [False, True])
+def test_cases_are_isolated_and_reference_answers_are_not_sent(monkeypatch, tmp_path: Path, expect_deep_job) -> None:
     documents = [tmp_path / "first.pdf", tmp_path / "second.pdf"]
     for path in documents:
         path.write_bytes(b"synthetic upload")
@@ -130,8 +131,14 @@ def test_cases_are_isolated_and_reference_answers_are_not_sent(monkeypatch, tmp_
         "question": "What is the budget?",
         "required_sources": ["first.pdf"],
         "expected_answer": "REFERENCE MUST NOT REACH AGENT",
+        "expect_deep_job": expect_deep_job,
     }
     try:
+        if expect_deep_job:
+            with pytest.raises(benchmark.WorkflowFailed, match="Expected a Deep Research job"):
+                client.run_case(case, documents, 60)
+            assert requests[-1][0] == "DELETE"
+            return
         results = [client.run_case(case, documents, 60) for _ in range(2)]
     finally:
         client.http.close()

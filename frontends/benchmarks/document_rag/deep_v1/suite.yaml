@@ -1,0 +1,35 @@
+name: climate-documents-deep-research-v1
+defaults:
+  source_policy: documents_only
+tests:
+  - id: deep-01-prioritisation-and-evidence-gaps
+    question: >-
+      Lag en grundig utredning på norsk, kun basert på de fem vedlagte dokumentene,
+      for norske beslutningstakere frem mot 2030. Undersøk rask metanreduksjon,
+      transport og grønn skipsfart, CO₂-lagring og internasjonal klimafinansiering.
+      Lag en kildelagt tabell som for hvert område skiller mellom tiltak, mål og
+      frist, hva som kan måles, og hva dokumentene ikke lar oss konkludere om.
+      Sammenhold kortsiktig temperaturgevinst med langsiktig gjennomføring.
+      Bruk Bangladesh og Pakistan til å forklare forskjellen mellom behov for
+      klimatilpasning og finansiering av utslippskutt. Bruk klimaskepsis-dokumentet
+      til å forklare hva klimamodellene kan underbygge, og hva det ikke sier
+      om effekten av de enkelte norske tiltakene. Avslutt med en begrunnet prioritering
+      og to opplysninger som må innhentes før en kan tallfeste tiltakenes relative effekt.
+      Marker anbefalinger som dine vurderinger, ikke som dokumentenes konklusjoner.
+      Bruk ingen eksterne kilder.
+    web_search: forbidden
+    expect_deep_job: true
+    answer_location: documents
+    required_sources:
+      - 2026-04-14 Klimatiltak_Norge.doc.pdf
+      - 2026-04-14 Mest-rammet-land.doc.pdf
+      - 2026-05-22_klimaskepsis.pdf
+      - 2026-05-26_klima_tiltak.pdf
+      - 2026-05-26_klimaengasjement.pdf
+    expected_key_points:
+      - Skiller mer enn 75 prosent reduksjon i metanintensitet innen 2030 fra en dokumentert utslippsreduksjon.
+      - Skiller minst fem internasjonale grønne korridorer innen 2030 fra målet om minst 30 Mt CO₂ per år i lagringskapasitet innen 2035.
+      - Dekker elektrifisering av persontransport og ladeinfrastruktur, ikke bare skipsfart.
+      - Skiller Bangladesh og Pakistans dokumenterte sårbarhet fra norske finansieringsforslag for utslippskutt, uten å anta landspesifikke tildelinger.
+      - Skiller klimamodellenes forklaring på observert oppvarming fra effekten av enkelttiltak.
+      - Har en sporbar prioritering, minst to konkrete datamangler og ingen oppdiktede effekttall.

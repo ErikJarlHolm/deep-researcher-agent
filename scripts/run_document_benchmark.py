@@ -142,6 +142,8 @@ def load_suite(path: Path, documents_dir: Path) -> tuple[dict, list[Path]]:
             raise ValueError(f"Web search must be forbidden: {case['id']}")
         if case.get("source_policy", "documents_only") != "documents_only":
             raise ValueError(f"Only documents_only cases are supported: {case['id']}")
+        if "expect_deep_job" in case and not isinstance(case["expect_deep_job"], bool):
+            raise ValueError(f"expect_deep_job must be a boolean: {case['id']}")
         required_sources = case.get("required_sources")
         if not isinstance(required_sources, list):
             raise ValueError(f"required_sources must be a list: {case['id']}")
@@ -329,6 +331,10 @@ class BenchmarkClient:
         self.active_job_id = job_id
         if job_id:
             answer = self.wait_report(job_id, deadline)
+        elif case.get("expect_deep_job"):
+            self.request("DELETE", f"/api/v1/collections/{collection}")
+            self.active_collection = None
+            raise WorkflowFailed("Expected a Deep Research job, but the workflow returned without starting one")
         elapsed = time.monotonic() - started
         required = case["required_sources"]
         missing_mentions = [name for name in required if name.casefold() not in answer.casefold()]

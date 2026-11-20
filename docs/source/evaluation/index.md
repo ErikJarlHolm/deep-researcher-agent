@@ -64,6 +64,18 @@ events, latency, and missing filename references for subsequent quality review.
 source support, correct synthesis, or proper abstention. This runner does not
 reproduce the old model-judged 100-point score.
 
+### Deep Research regression scenario
+
+The separate scenario in `frontends/benchmarks/document_rag/deep_v1/suite.yaml` uses
+the same five PDFs and leaves the frozen v1 suite unchanged. Run it with
+`scripts/run_document_benchmark.py`, selecting the new suite and its manifest,
+the original PDF directory, and a fresh output file. Allow at least 420 seconds per case
+for ingestion and the report job. `expect_deep_job: true` requires an actual
+Deep Research job and a completed report, not just a long chat response.
+Review the report against the scenario's criteria and check cited passages
+before accepting its conclusions. This case explicitly requests a thorough
+investigation; it does not measure whether auto mode detects implicit complexity.
+
 ### Frozen migration baseline
 
 The frozen v1 suite and manifest live in

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "suite_sha256": "61ea7d15c8ed319dff15b38bd8bbaa5d221935eeea347f2ecc7deebdd4369207",
+  "documents_sha256": {
+    "2026-04-14 Klimatiltak_Norge.doc.pdf": "49392effd042898167379529c84eaeec142057b6e6d476e147be2931d29d6dbd",
+    "2026-04-14 Mest-rammet-land.doc.pdf": "666b79e345f3fe548a32ea2a0f3a7f5e22f3d575c88daa5a1a9de6822d428ec5",
+    "2026-05-22_klimaskepsis.pdf": "9ca80752b4ca9e8c1f93c9ea434503aaa5757e2e64e6bebd5d221ccf4ea406f4",
+    "2026-05-26_klima_tiltak.pdf": "1e609de668ea29907a549fbc3027c4afdf811ef94a229a5838b3a711f1092318",
+    "2026-05-26_klimaengasjement.pdf": "56dd5c75dae713c6b1db30fb86cb8721e0e3070ec2e43b51145360366b3a9a82"
+  },
+  "case_ids": ["deep-01-prioritisation-and-evidence-gaps"],
+  "source_policy": "documents_only"
+}
