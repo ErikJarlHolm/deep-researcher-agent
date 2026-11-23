@@ -29,8 +29,11 @@ from langchain_core.tools import BaseTool
 from nemo_relay.integrations.deepagents import NemoRelayDeepAgentsCallbackHandler
 
 from deep_researcher_agent.common import LLMProvider
+from deep_researcher_agent.common import LLMRole
 from deep_researcher_agent.common import load_prompt
 from deep_researcher_agent.common import validate_research_source_configuration
+from deep_researcher_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
+from deep_researcher_agent.common.callbacks import SUPPRESS_UNREVIEWED_CONTENT_TAG
 from deep_researcher_agent.common.citation_verification import CitationIntegrityError
 from deep_researcher_agent.common.citation_verification import EmptySourceRegistryError
 from deep_researcher_agent.common.citation_verification import EmptySourceRegistryReason
@@ -49,6 +52,7 @@ from .factory import build_deep_research_graph
 from .factory import build_deep_research_middleware_set
 from .factory import build_deep_research_tool_set
 from .models import DeepResearchAgentState
+from .report_review import review_report
 from .resource_limits import DeepResearchExecutionTimeout
 from .resource_limits import DeepResearchResourceLimits
 from .resource_limits import StateBudgetLedger
@@ -85,6 +89,7 @@ class DeepResearcherAgent:
         domain_catalog_path: str | None = None,
         enable_source_router: bool = True,
         enable_citation_verification: bool = True,
+        enable_report_review: bool = False,
         skills: DeepResearchSkillsConfig | None = None,
         sandbox: DeepResearchSandboxConfig | None = None,
         job_id: str | None = None,
@@ -106,6 +111,7 @@ class DeepResearcherAgent:
             domain_catalog_path: Optional YAML/JSON domain catalog path for source-router-agent.
             enable_source_router: Enable the advisory source-router-agent before planning.
             enable_citation_verification: Verify generated citations against the captured source registry.
+            enable_report_review: Review the final report against the request and research notes before publication.
             skills: Optional DeepAgents skills config.
             sandbox: Optional DeepAgents sandbox config.
             job_id: Optional async job identifier used to scope sandbox backends.
@@ -127,6 +133,7 @@ class DeepResearcherAgent:
         self.domain_catalog_path = domain_catalog_path
         self.enable_source_router = enable_source_router
         self.enable_citation_verification = enable_citation_verification
+        self.enable_report_review = enable_report_review
         self.job_id = str(job_id) if job_id is not None else str(uuid4())
 
         self.deepagents_runtime = DeepAgentsRuntime(
@@ -315,13 +322,17 @@ class DeepResearcherAgent:
             max_consecutive_failures=self.resource_limits.max_consecutive_source_tool_failures,
         )
         try:
-            execution_timeout = asyncio.timeout(self.resource_limits.max_execution_seconds)
+            deadline = asyncio.get_running_loop().time() + self.resource_limits.max_execution_seconds
+            execution_timeout = asyncio.timeout_at(deadline)
             try:
                 async with execution_timeout:
 
                     async def _invoke_orchestrator() -> Any:
                         callbacks = [*self.callbacks, NemoRelayDeepAgentsCallbackHandler()]
-                        return await agent.ainvoke(state, config={"callbacks": callbacks})
+                        config = {"callbacks": callbacks}
+                        if self.enable_report_review:
+                            config["tags"] = [SUPPRESS_OUTPUT_ARTIFACT_TAG, SUPPRESS_UNREVIEWED_CONTENT_TAG]
+                        return await agent.ainvoke(state, config=config)
 
                     result = await run_agent(
                         "deep_research_agent",
@@ -361,7 +372,7 @@ class DeepResearcherAgent:
                     enable_logging=False,
                 )
                 generated_answer = None
-                if final_message is not None:
+                if final_message is not None and not self.enable_report_review:
                     generated_answer = sanitize_report(final_message).sanitized_report
                 raise EmptySourceRegistryError(
                     "deep research",
@@ -425,6 +436,25 @@ class DeepResearcherAgent:
                         citation["url"] for citation in final_verification.valid_citations if citation.get("url")
                     )
                 )
+
+            if self.enable_report_review:
+                review_timeout = asyncio.timeout_at(deadline)
+                try:
+                    async with review_timeout:
+                        await review_report(
+                            model=self.llm_provider.get(LLMRole.REPORT_WRITER),
+                            question=query,
+                            report=final_message,
+                            files=(
+                                result.get("files", {}) if isinstance(result, dict) else getattr(result, "files", {})
+                            ),
+                        )
+                except TimeoutError as exc:
+                    if review_timeout.expired():
+                        raise DeepResearchExecutionTimeout("Deep-research report review time limit exceeded") from exc
+                    raise
+                if review_timeout.expired():
+                    raise DeepResearchExecutionTimeout("Deep-research report review time limit exceeded")
 
             # Re-emit the verified/sanitized report so the frontend overwrites
             # the raw version that on_llm_end auto-emitted during ainvoke().

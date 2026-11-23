@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 SUPPRESS_OUTPUT_ARTIFACT_TAG = "deep-researcher:suppress-output-artifact"
+SUPPRESS_UNREVIEWED_CONTENT_TAG = "deep-researcher:suppress-unreviewed-content"
 
 
 YELLOW = "\033[33m"

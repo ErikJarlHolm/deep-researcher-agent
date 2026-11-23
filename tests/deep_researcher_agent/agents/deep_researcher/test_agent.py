@@ -132,7 +132,7 @@ class TestDeepResearcherAgent:
         """Create a real LangChain tool."""
         return web_search_tool
 
-    def _build_batch_tool(self, agent, researcher_runnable, backend=None):
+    def _build_batch_tool(self, agent, researcher_runnable, backend=None, original_request=""):
         return build_research_batch_tool(
             researcher_runnable=researcher_runnable,
             backend=backend,
@@ -140,6 +140,7 @@ class TestDeepResearcherAgent:
             max_research_concurrency=agent.max_research_concurrency,
             resource_limits=agent.resource_limits,
             source_registry_middleware=agent.source_registry_middleware,
+            original_request=original_request,
         )
 
     def _structured_notes_response(self, query_topic: str = "Research Topic"):
@@ -802,7 +803,9 @@ class TestDeepResearcherAgent:
             FileUploadResponse(path=path, error=None) for path, _content in files
         ]
 
-        batch_tool = self._build_batch_tool(agent, fake_runnable, backend=fake_backend)
+        batch_tool = self._build_batch_tool(
+            agent, fake_runnable, backend=fake_backend, original_request="Compare portability and hidden constraints."
+        )
         agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.test/opencl", title="OpenCL"))
         agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.test/unused", title="Unused"))
         tool_properties = batch_tool.tool_call_schema.model_json_schema()["properties"]
@@ -830,6 +833,7 @@ class TestDeepResearcherAgent:
         assert len(fake_runnable.calls) == 1
         call_state, call_config = fake_runnable.calls[0]
         assert "Batch research invocation" in call_state["messages"][0].content
+        assert "Compare portability and hidden constraints." in call_state["messages"][0].content
         assert "return a structured ResearchNotes response" in call_state["messages"][0].content
         assert "Do not call write_file or edit_file" in call_state["messages"][0].content
         assert (
@@ -1411,6 +1415,21 @@ class TestDeepResearcherAgent:
         assert invoke_state["messages"][0].content.startswith("Batch research invocation")
         assert "Batch research invocation" in invoke_state["messages"][0].content
 
+    def test_researcher_invoke_state_retains_original_request_as_context(self):
+        query = ResearchQuery(
+            query="Compare technical requirements",
+            preferred_tools=["web_search_tool"],
+            target_components=["requirements"],
+            rationale="Investigate requirements.",
+        )
+        original = 'Compare alternatives and explain "hidden" constraints.'
+        invoke_state = researcher_invoke_state(query, None, original_request=original)
+        content = invoke_state["messages"][0].content
+
+        assert "Compare technical requirements" in content
+        assert json.dumps(original, ensure_ascii=False) in content
+        assert "do not research unrelated components" in content
+
     def test_modal_backend_is_concrete_cached_and_routes_skills_locally(self, mock_llm_provider, real_tool):
         """Modal backend creation is lazy, cached, and skill reads do not hit Modal."""
         from deepagents.backends import FilesystemBackend
@@ -1848,6 +1867,7 @@ class TestDeepResearcherAgent:
             (None, False, EmptySourceRegistryReason.NO_SOURCE_RESULTS),
         ],
     )
+    @pytest.mark.parametrize("enable_report_review", [False, True])
     @pytest.mark.asyncio
     async def test_committed_output_empty_registry_classification_preserves_sanitized_answer(
         self,
@@ -1855,6 +1875,7 @@ class TestDeepResearcherAgent:
         real_tool,
         data_sources,
         enable_citation_verification,
+        enable_report_review,
         expected_reason,
         caplog,
     ):
@@ -1878,6 +1899,7 @@ class TestDeepResearcherAgent:
                 llm_provider=mock_llm_provider,
                 tools=[real_tool],
                 enable_citation_verification=enable_citation_verification,
+                enable_report_review=enable_report_review,
             )
             state = DeepResearchAgentState(
                 messages=[HumanMessage(content="Test")],
@@ -1889,7 +1911,7 @@ class TestDeepResearcherAgent:
                     await agent.run(state)
 
         assert exc_info.value.reason is expected_reason
-        assert exc_info.value.generated_answer == "Draft answer with "
+        assert exc_info.value.generated_answer == (None if enable_report_review else "Draft answer with ")
         assert not any(message.startswith("Deep Research Subagent failed:") for message in caplog.messages)
 
     @pytest.mark.asyncio
@@ -2464,6 +2486,51 @@ class TestDeepResearcherCitationVerification:
             cited_urls=["https://docs.nvidia.com/cuda/"],
         )
         assert result.messages[-1].content == sanitized_answer
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rejected", [False, True])
+    async def test_report_review_gates_publication(self, mock_llm_provider, real_tool, rejected):
+        from deep_researcher_agent.agents.deep_researcher.agent import DeepResearcherAgent
+        from deep_researcher_agent.agents.deep_researcher.report_review import ReportReviewError
+        from deep_researcher_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
+
+        answer = "Supported answer [1].\n\n## Sources\n[1] https://example.test/source"
+        mock_agent = MagicMock()
+        mock_agent.ainvoke = AsyncMock(
+            return_value={"messages": [AIMessage(content="done")], "files": output_markdown_file(answer)}
+        )
+        mock_agent.with_config.return_value = mock_agent
+        callback = MagicMock()
+        review = AsyncMock(side_effect=ReportReviewError("report_review_rejected") if rejected else None)
+        with (
+            patch("deep_researcher_agent.agents.deep_researcher.factory.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deep_researcher_agent.agents.deep_researcher.agent.FinalReportCommitTracker",
+                return_value=committed_tracker(answer),
+            ),
+            patch("deep_researcher_agent.agents.deep_researcher.agent.review_report", review),
+        ):
+            agent = DeepResearcherAgent(
+                llm_provider=mock_llm_provider,
+                tools=[real_tool],
+                callbacks=[callback],
+                enable_citation_verification=False,
+                enable_report_review=True,
+            )
+            agent.source_registry_middleware.registry.add(
+                SourceEntry(url="https://example.test/source", title="Source", tool_name="web_search")
+            )
+            state = DeepResearchAgentState(messages=[HumanMessage(content="Original question")])
+            if rejected:
+                with pytest.raises(ReportReviewError, match="report_review_rejected"):
+                    await agent.run(state)
+                callback.emit_final_report.assert_not_called()
+            else:
+                await agent.run(state)
+                callback.emit_final_report.assert_called_once()
+
+        assert SUPPRESS_OUTPUT_ARTIFACT_TAG in mock_agent.ainvoke.await_args.kwargs["config"]["tags"]
+        assert review.await_args.kwargs["question"] == "Original question"
 
     @pytest.mark.asyncio
     async def test_run_publishes_report_reverified_after_artifact_post_processing(self, mock_llm_provider, real_tool):

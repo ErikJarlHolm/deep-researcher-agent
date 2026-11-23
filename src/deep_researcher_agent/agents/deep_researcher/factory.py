@@ -638,6 +638,8 @@ def build_deep_research_graph(
         visibility_middleware=context.visibility_middleware,
         filesystem_permissions=context.permissions(RESEARCHER_AGENT),
     )
+    request_content = context.state.messages[-1].content if context.state.messages else ""
+    original_request = request_content if isinstance(request_content, str) else str(request_content)
     research_batch_tool = build_research_batch_tool(
         researcher_runnable=researcher_runnable,
         backend=context.backend,
@@ -646,6 +648,7 @@ def build_deep_research_graph(
         resource_limits=context.resource_limits,
         state_budget=context.state_budget,
         source_registry_middleware=source_registry_middleware,
+        original_request=original_request,
     )
 
     orchestrator_tools = [*context.tool_set.helper_tools, research_batch_tool]

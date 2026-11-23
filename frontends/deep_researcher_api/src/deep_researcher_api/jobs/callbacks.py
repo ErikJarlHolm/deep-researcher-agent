@@ -43,6 +43,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from deep_researcher_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
+from deep_researcher_agent.common.callbacks import SUPPRESS_UNREVIEWED_CONTENT_TAG
 from deep_researcher_agent.common.citation_verification import extract_http_urls
 from deep_researcher_agent.common.citation_verification import get_session_registry
 
@@ -593,7 +594,11 @@ class AgentEventCallback(BaseCallbackHandler):
                     category=EventCategory.WORKFLOW,
                     state=EventState.START,
                     name=name,
-                    data=EventData(input=self._extract_input(inputs)),
+                    data=(
+                        None
+                        if SUPPRESS_UNREVIEWED_CONTENT_TAG in (kwargs.get("tags") or [])
+                        else EventData(input=self._extract_input(inputs))
+                    ),
                     metadata=self._build_metadata_for_run(run_id),
                 )
             )
@@ -609,7 +614,11 @@ class AgentEventCallback(BaseCallbackHandler):
                     category=EventCategory.WORKFLOW,
                     state=EventState.END,
                     name=name,
-                    data=EventData(output=self._extract_output(outputs)),
+                    data=(
+                        None
+                        if SUPPRESS_UNREVIEWED_CONTENT_TAG in (kwargs.get("tags") or [])
+                        else EventData(output=self._extract_output(outputs))
+                    ),
                     metadata=self._build_metadata_for_run(run_id),
                 )
             )
@@ -660,7 +669,8 @@ class AgentEventCallback(BaseCallbackHandler):
 
         parsed_input = self._parse_tool_input(input_str)
 
-        emit_input = self._trim_tool_input(parsed_input)
+        suppress_report = SUPPRESS_UNREVIEWED_CONTENT_TAG in (kwargs.get("tags") or [])
+        emit_input = None if suppress_report else self._trim_tool_input(parsed_input)
         is_sandbox_tool = self._is_sandbox_tool(tool_name, parsed_input)
         if run_id:
             self._run_id_to_sandbox_tool[run_id] = is_sandbox_tool
@@ -675,7 +685,8 @@ class AgentEventCallback(BaseCallbackHandler):
             )
         )
 
-        self._emit_tool_artifact(tool_name, parsed_input, run_id=run_id)
+        if not suppress_report:
+            self._emit_tool_artifact(tool_name, parsed_input, run_id=run_id)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
         """Emit a tool.end event and clear the tool run's lineage/sandbox state."""
@@ -762,7 +773,7 @@ class AgentEventCallback(BaseCallbackHandler):
 
         agent_info = self._find_agent_for_run(run_id)
         metadata = self._build_metadata_for_run(run_id) or {}
-        if thinking:
+        if thinking and SUPPRESS_UNREVIEWED_CONTENT_TAG not in (kwargs.get("tags") or []):
             if len(thinking) > self.THINKING_TRIM_LIMIT:
                 metadata["thinking"] = thinking[: self.THINKING_TRIM_LIMIT] + self.THINKING_TRIM_SUFFIX
             else:

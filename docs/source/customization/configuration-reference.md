@@ -639,6 +639,7 @@ functions:
 | `domain_catalog_path` | `str` | `None` | Optional YAML or JSON domain catalog used by the source router. Without one, Deep Researcher Agent generates a general route from available mapped sources. |
 | `enable_source_router` | `bool` | `true` | Run the advisory source-router sub-agent before planning. It recommends available mapped sources but does not restrict worker tool bindings. |
 | `enable_citation_verification` | `bool` | `true` | Verify final citations against sources captured from configured tool results. Set `false` only when the active source formats are not compatible with verification. |
+| `enable_report_review` | `bool` | `false` | Experimentally review the report against the original request and research notes before publishing. Requires a model supporting JSON output; a rejected, invalid, oversized, or timed-out review fails the job. This is not independent verification against original source passages. |
 | `skills` | object or function ref | `None` | Inline `deep_research_skills` config or a reference to a config-only function of that type. Skill assignments are keyed by `researcher-agent` and `writer-agent`. |
 | `sandbox` | object or function ref | `None` | Inline `deep_research_sandbox` config or a reference to a config-only function of that type. Enables the DeepAgents execution backend. |
 | `max_research_concurrency` | `int` | `6` | Maximum `ResearchQuery` objects accepted and run concurrently by one `run_research_batch` call. |

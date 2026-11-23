@@ -75,6 +75,7 @@ import pytest
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FinalReportCommitTracker
 from deep_researcher_agent.auth import Principal
 from deep_researcher_agent.common.callbacks import SUPPRESS_OUTPUT_ARTIFACT_TAG
+from deep_researcher_agent.common.callbacks import SUPPRESS_UNREVIEWED_CONTENT_TAG
 from deep_researcher_api.jobs.callbacks import ArtifactType
 from deep_researcher_api.jobs.callbacks import DeepResearchEventCallback
 from deep_researcher_api.jobs.callbacks import EventCategory
@@ -417,6 +418,33 @@ class TestDeepResearchEventCallback:
 
         events = [stored.args[0] for stored in mock_store.store.call_args_list]
         assert [event["type"] for event in events] == ["llm.end"]
+
+    @pytest.mark.parametrize("tool_name", ["write_file", "edit_file", "think"])
+    @pytest.mark.parametrize("tool_input", ['{"content": "unreviewed report"}', "unreviewed report"])
+    def test_suppressed_tool_does_not_publish_draft(self, tool_name, tool_input):
+        mock_store = MagicMock()
+        callback = DeepResearchEventCallback(event_store=mock_store)
+
+        callback.on_tool_start(
+            {"name": tool_name},
+            input_str=tool_input,
+            tags=[SUPPRESS_UNREVIEWED_CONTENT_TAG],
+        )
+
+        events = [stored.args[0] for stored in mock_store.store.call_args_list]
+        assert [event["type"] for event in events] == ["tool.start"]
+        assert "unreviewed report" not in str(events)
+
+    def test_suppressed_agent_chain_does_not_publish_draft(self):
+        mock_store = MagicMock()
+        callback = DeepResearchEventCallback(event_store=mock_store)
+        tags = [SUPPRESS_UNREVIEWED_CONTENT_TAG]
+        callback.on_chain_start({"name": "writer-agent"}, {"input": "unreviewed report"}, run_id="a", tags=tags)
+        callback.on_chain_end({"output": "unreviewed report"}, run_id="a", tags=tags)
+
+        events = [stored.args[0] for stored in mock_store.store.call_args_list]
+        assert [event["type"] for event in events] == ["workflow.start", "workflow.end"]
+        assert "unreviewed report" not in str(events)
 
 
 class TestSubmitDeepResearchJob:

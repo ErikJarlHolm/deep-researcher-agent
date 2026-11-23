@@ -80,22 +80,30 @@ def _exhausted_research_notes(query: ResearchQuery) -> ResearchNotes:
     )
 
 
-def format_research_request(query: ResearchQuery) -> str:
+def format_research_request(query: ResearchQuery, *, original_request: str = "") -> str:
     """Create the single-query researcher task text used by the batch tool."""
     query_json = json.dumps(query.model_dump(mode="json"), indent=2, ensure_ascii=False)
+    request_context = (
+        "\n\nOriginal user request for context (do not research unrelated components):\n"
+        + json.dumps(original_request, ensure_ascii=False)
+        if original_request
+        else ""
+    )
     return (
         "Batch research invocation. Execute this ResearchQuery and return a structured ResearchNotes response. "
         "Do not call write_file or edit_file; run_research_batch will persist the returned ResearchNotes under "
         "/shared/ after you return.\n\n"
         "ResearchQuery JSON:\n"
-        f"{query_json}"
+        f"{query_json}{request_context}"
     )
 
 
-def researcher_invoke_state(query: ResearchQuery, runtime: ToolRuntime | None) -> dict[str, Any]:
+def researcher_invoke_state(
+    query: ResearchQuery, runtime: ToolRuntime | None, *, original_request: str = ""
+) -> dict[str, Any]:
     """Build nested researcher state, carrying parent files for StateBackend-backed skills."""
     invoke_state: dict[str, Any] = {
-        "messages": [HumanMessage(content=format_research_request(query))],
+        "messages": [HumanMessage(content=format_research_request(query, original_request=original_request))],
     }
     parent_state = getattr(runtime, "state", None) if runtime is not None else None
     if isinstance(parent_state, dict) and "files" in parent_state:
@@ -121,13 +129,14 @@ async def _run_research_query(
     runtime: ToolRuntime | None,
     callbacks: list[Any],
     semaphore: asyncio.Semaphore,
+    original_request: str = "",
 ) -> ResearchNotes:
     """Run one researcher worker and return its structured notes."""
     async with semaphore:
         with agent_scope(RESEARCHER_AGENT_NAME, input_value=query) as lifecycle:
             try:
                 result = await researcher_runnable.ainvoke(
-                    researcher_invoke_state(query, runtime),
+                    researcher_invoke_state(query, runtime, original_request=original_request),
                     config=researcher_invoke_config(runtime, callbacks),
                 )
             except (ModelCallLimitExceededError, ResearcherBudgetExhaustedError):
@@ -218,6 +227,7 @@ async def _run_research_queries(
     runtime: ToolRuntime | None,
     callbacks: list[Any],
     max_concurrency: int,
+    original_request: str = "",
 ) -> tuple[list[ResearchQuery], list[ResearchNotes], list[str]]:
     """Run researcher workers concurrently and collect successful query/note pairs plus surfaced errors."""
     semaphore = asyncio.Semaphore(min(max_concurrency, len(queries)))
@@ -229,6 +239,7 @@ async def _run_research_queries(
                 runtime=runtime,
                 callbacks=callbacks,
                 semaphore=semaphore,
+                original_request=original_request,
             ),
             context=nemo_relay.fork_asyncio_context(),
         )
@@ -258,6 +269,7 @@ def build_research_batch_tool(
     backend: Any | None = None,
     state_budget: StateBudgetLedger | None = None,
     source_registry_middleware: Any | None = None,
+    original_request: str = "",
 ) -> BaseTool:
     """Build an orchestrator-only tool that runs researcher tasks concurrently."""
     limits = resource_limits or DeepResearchResourceLimits()
@@ -306,6 +318,7 @@ def build_research_batch_tool(
             runtime=runtime,
             callbacks=callbacks,
             max_concurrency=max_research_concurrency,
+            original_request=original_request,
         )
         note_files = _research_note_files(successful_queries, notes)
         batch_note_bytes = sum(len(content) for _, content in note_files)

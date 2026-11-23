@@ -91,6 +91,10 @@ class DeepResearchAgentConfig(FunctionBaseConfig, name="deep_research_agent"):
         default=True,
         description="Verify generated citations against sources captured from configured tools.",
     )
+    enable_report_review: bool = Field(
+        default=False,
+        description="Review the report against the request and research notes before publishing.",
+    )
     skills: DeepResearchSkillsConfig | FunctionRef | None = Field(
         default=None,
         description="Optional inline skills config or function ref to a deep_research_skills config.",
@@ -247,6 +251,7 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
         domain_catalog_path=config.domain_catalog_path,
         enable_source_router=config.enable_source_router,
         enable_citation_verification=config.enable_citation_verification,
+        enable_report_review=config.enable_report_review,
         skills=skills_config,
         sandbox=sandbox_config,
         max_research_concurrency=config.max_research_concurrency,
@@ -284,6 +289,7 @@ async def deep_research_agent(config: DeepResearchAgentConfig, builder: Builder)
                     domain_catalog_path=config.domain_catalog_path,
                     enable_source_router=config.enable_source_router,
                     enable_citation_verification=config.enable_citation_verification,
+                    enable_report_review=config.enable_report_review,
                     skills=skills_config,
                     sandbox=sandbox_config,
                     job_id=job_id,
