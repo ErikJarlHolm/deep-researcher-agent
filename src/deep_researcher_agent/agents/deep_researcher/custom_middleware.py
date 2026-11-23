@@ -24,6 +24,7 @@ import re
 import threading
 from pathlib import Path
 from pathlib import PurePosixPath
+from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware import hook_config
@@ -46,6 +47,7 @@ from deep_researcher_agent.common.citation_verification import is_non_citable_st
 from deep_researcher_agent.common.logging_utils import log_content_metadata
 
 from .models import ResearchNotes
+from .models import ResearchPlan
 from .resource_limits import DeepResearchResourceLimits
 from .resource_limits import StateBudgetLedger
 
@@ -736,8 +738,8 @@ class RequiredWriterDelegationMiddleware(AgentMiddleware):
 
     Source failures can make an orchestrator conclude that no further research
     is useful and return ordinary assistant text without ever delegating to the
-    writer. Give it one bounded corrective turn that forbids more research and
-    requires writer delegation. The writer's existing commit middleware remains
+    writer. Dispatch one writer task directly rather than prompting the model to
+    try the same handoff again. The writer's existing commit middleware remains
     the only component allowed to publish the final report.
     """
 
@@ -747,22 +749,41 @@ class RequiredWriterDelegationMiddleware(AgentMiddleware):
         tracker: FinalReportCommitTracker,
         max_retries: int = 1,
         reason_code: str = "writer_output_not_committed",
+        recovery_batch_size: int = 0,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
         self.tracker = tracker
         self.max_retries = max_retries
         self.reason_code = reason_code
-        self._retry_message = (
-            "The run cannot finish because writer-agent has not committed /shared/output.md. "
-            "Do not perform or retry source research. Delegate to writer-agent now using the Writer Delegation "
-            "Template and the plan, research notes, verified sources, and explicit evidence gaps already available. "
-            "After writer-agent returns, return only its completion marker."
-        )
+        self.recovery_batch_size = recovery_batch_size
+
+    def _research_handoff(self, messages: list[object], files: object, query: str) -> tuple[str, dict] | None:
+        if not self.recovery_batch_size or not isinstance(files, dict):
+            return None
+        calls = [call for message in messages if isinstance(message, AIMessage) for call in message.tool_calls]
+        plan = _entry_text(files.get("/shared/plan.json") or files.get("/plan.json"))
+        if not plan:
+            if any(call["name"] == "task" and call["args"].get("subagent_type") == "planner-agent" for call in calls):
+                return None
+            return "task", {
+                "subagent_type": "planner-agent",
+                "description": f"Create and return the structured research plan for this user request:\n\n{query}",
+            }
+        if any(call["name"] == "run_research_batch" for call in calls):
+            return None
+        try:
+            queries = ResearchPlan.model_validate_json(plan).queries[: self.recovery_batch_size]
+        except ValidationError:
+            logger.warning("Cannot recover skipped research: persisted plan did not validate")
+            return None
+        if not queries:
+            return None
+        return "run_research_batch", {"queries": [item.model_dump(mode="json") for item in queries]}
 
     def _retry_count(self, messages: list[object]) -> int:
         return sum(
-            isinstance(message, HumanMessage)
+            isinstance(message, AIMessage)
             and message.additional_kwargs.get(_GENERATED_RETRY_MARKER) == "required_writer_delegation"
             for message in messages
         )
@@ -780,23 +801,42 @@ class RequiredWriterDelegationMiddleware(AgentMiddleware):
         if self._retry_count(messages) >= self.max_retries:
             raise RuntimeError(self.reason_code)
 
-        logger.warning("Orchestrator ended before writer delegation; requesting one corrective turn")
+        query = next((message.text for message in reversed(messages) if isinstance(message, HumanMessage)), "")
+        description = (
+            "Write the final cited Markdown report to /shared/output.md using the available plan, research "
+            "notes and verified sources in /shared/. Read any applicable writer skill. Do not retry research "
+            "or treat missing files as evidence. State which parts cannot be answered, especially if planning "
+            "or research was incomplete. Return the completion marker only after the write succeeds.\n\n"
+            f"User request:\n{query}"
+        )
+        handoff = self._research_handoff(messages, files, query)
+        name, args = handoff or ("task", {"subagent_type": "writer-agent", "description": description})
+        marker = "required_research_handoff" if handoff else "required_writer_delegation"
+        logger.warning("Orchestrator ended early; dispatching %s (%s)", name, marker)
         return {
             "messages": [
-                HumanMessage(
-                    content=self._retry_message,
-                    additional_kwargs={_GENERATED_RETRY_MARKER: "required_writer_delegation"},
+                AIMessage(
+                    id=last_message.id,
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": name,
+                            "args": args,
+                            "id": f"research-recovery-{uuid4().hex}",
+                        }
+                    ],
+                    additional_kwargs={_GENERATED_RETRY_MARKER: marker},
                 )
             ],
-            "jump_to": "model",
+            "jump_to": "tools",
         }
 
-    @hook_config(can_jump_to=["model"])
+    @hook_config(can_jump_to=["tools"])
     def after_model(self, state, runtime):
         """Require a synchronous orchestrator to delegate writer publication."""
         return self._check_after_model(state)
 
-    @hook_config(can_jump_to=["model"])
+    @hook_config(can_jump_to=["tools"])
     async def aafter_model(self, state, runtime):
         """Require an asynchronous orchestrator to delegate writer publication."""
         return self._check_after_model(state)
@@ -1442,12 +1482,14 @@ class PlanPersistenceMiddleware(AgentMiddleware):
     def _persist_plan(self, plan: object) -> None:
         """Serialize a structured ResearchPlan and upload it to shared state."""
         if plan is None:
+            logger.warning("Planner finished without a structured research plan")
             return
         if hasattr(plan, "model_dump"):
             payload = plan.model_dump(mode="json", exclude_none=True)
         elif isinstance(plan, dict):
             payload = plan
         else:
+            logger.warning("Planner returned an unsupported structured research plan type")
             return
 
         queries = payload.get("queries", [])
@@ -1496,6 +1538,7 @@ class PlanPersistenceMiddleware(AgentMiddleware):
                 log_content_metadata("; ".join(errors)),
             )
             raise RuntimeError(f"Failed to persist the research plan to {self.path}")
+        logger.info("Persisted structured research plan (query_count=%d, bytes=%d)", len(queries), len(content))
 
     def after_agent(self, state, runtime):
         """Persist the plan once the synchronous planner run completes."""

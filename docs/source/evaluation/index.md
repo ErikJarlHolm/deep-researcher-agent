@@ -76,6 +76,20 @@ Review the report against the scenario's criteria and check cited passages
 before accepting its conclusions. This case explicitly requests a thorough
 investigation; it does not measure whether auto mode detects implicit complexity.
 
+If the orchestrator ends before the writer has committed the report, the
+workflow dispatches one recovery task to the writer. In profiles without a
+source router, it first recovers a skipped planning step or submits one
+bounded batch from the validated plan if no research batch was attempted.
+The writer uses only the material already gathered and must state missing
+evidence. The same report commit and citation checks still apply; a job
+that cannot produce a committed report remains a failure.
+
+When diagnosing a missing report, distinguish a missing structured plan from
+successful plan persistence in the backend logs. The planner records the
+query count and serialized size on success, without logging plan contents.
+A persisted plan does not establish that the main agent ran the queries,
+that the writer received evidence, or that a report was published.
+
 ### Frozen migration baseline
 
 The frozen v1 suite and manifest live in

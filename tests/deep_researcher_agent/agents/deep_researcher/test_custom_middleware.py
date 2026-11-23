@@ -916,13 +916,15 @@ class TestRequiredWriterDelegationMiddleware:
 
     def test_terminal_orchestrator_response_requests_writer_delegation(self) -> None:
         middleware = RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker())
-
-        update = middleware.after_model(self._state(), None)
+        state = self._state(messages=[HumanMessage(content="Compare the sources."), AIMessage(content="No report.")])
+        update = middleware.after_model(state, None)
 
         assert update is not None
-        assert update["jump_to"] == "model"
-        assert "writer-agent" in str(update["messages"][0].content)
-        assert "Do not perform or retry source research" in str(update["messages"][0].content)
+        assert update["jump_to"] == "tools"
+        call = update["messages"][0].tool_calls[0]
+        assert call["name"] == "task"
+        assert call["args"]["subagent_type"] == "writer-agent"
+        assert "Compare the sources." in call["args"]["description"]
 
     def test_intermediate_tool_call_is_not_interrupted(self) -> None:
         middleware = RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker())
@@ -937,6 +939,48 @@ class TestRequiredWriterDelegationMiddleware:
 
         assert middleware.after_model(state, None) is None
 
+    def test_recovers_skipped_planning_before_writer_and_does_not_repeat_planning(self) -> None:
+        middleware = RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker(), recovery_batch_size=2)
+        question = HumanMessage(content="Compare the sources.")
+        initial = self._state(messages=[question, AIMessage(content="No report.")])
+        first = middleware.after_model(initial, None)["messages"][0]
+        assert first.tool_calls[0]["args"]["subagent_type"] == "planner-agent"
+
+        later = self._state(messages=[question, first, AIMessage(content="Still no plan.")])
+        second = middleware.after_model(later, None)["messages"][0]
+        assert second.tool_calls[0]["args"]["subagent_type"] == "writer-agent"
+
+    def test_reuses_bounded_validated_queries_from_persisted_plan(self) -> None:
+        middleware = RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker(), recovery_batch_size=1)
+        plan = {
+            "task_analysis": {
+                "user_intent": "Compare the sources.",
+                "explicit_requirements": ["Compare"],
+                "implicit_requirements": [],
+                "out_of_scope": [],
+                "language": "English",
+            },
+            "answer_strategy": {
+                "answer_type": "comparison",
+                "title": "Comparison",
+                "required_components": [{"id": "facts", "name": "Facts", "description": "Compare facts."}],
+            },
+            "constraints": [],
+            "queries": [
+                {
+                    "query": query,
+                    "preferred_tools": ["knowledge_search"],
+                    "target_components": ["facts"],
+                    "rationale": "Find source evidence.",
+                }
+                for query in ("Compare targets", "Compare outcomes")
+            ],
+        }
+        state = self._state(files={"/plan.json": {"content": json.dumps(plan)}})
+        call = middleware.after_model(state, None)["messages"][0].tool_calls[0]
+        assert call["name"] == "run_research_batch"
+        assert [item["query"] for item in call["args"]["queries"]] == ["Compare targets"]
+
     def test_committed_writer_output_allows_terminal_response(self) -> None:
         tracker = FinalReportCommitTracker()
         tracker.record("# Final report")
@@ -944,6 +988,29 @@ class TestRequiredWriterDelegationMiddleware:
         state = self._state(files={"/shared/output.md": {"content": "# Final report"}})
 
         assert middleware.after_model(state, None) is None
+
+    @pytest.mark.asyncio
+    async def test_graph_dispatches_writer_even_when_model_only_returns_text(self) -> None:
+        calls = []
+
+        async def task(description: str, subagent_type: str) -> str:
+            """Delegate a task to the named subagent."""
+            calls.append((description, subagent_type))
+            return "Simulated writer failed to commit"
+
+        graph = create_agent(
+            _ToolBindingFakeChatModel(
+                responses=[AIMessage(content="No report."), AIMessage(content="Still no report.")]
+            ),
+            tools=[task],
+            middleware=[RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker())],
+        )
+        with pytest.raises(RuntimeError, match=r"^writer_output_not_committed\b"):
+            await graph.ainvoke({"messages": [HumanMessage(content="Compare the sources.")]})
+
+        assert len(calls) == 1
+        assert calls[0][1] == "writer-agent"
+        assert "Compare the sources." in calls[0][0]
 
     def test_second_terminal_response_without_writer_fails_closed(self) -> None:
         middleware = RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker())
@@ -955,15 +1022,6 @@ class TestRequiredWriterDelegationMiddleware:
 
         with pytest.raises(RuntimeError, match="^writer_output_not_committed$"):
             middleware.after_model(state, None)
-
-    def test_matching_user_input_does_not_consume_delegation_retry(self) -> None:
-        middleware = RequiredWriterDelegationMiddleware(tracker=FinalReportCommitTracker())
-        state = self._state(messages=[HumanMessage(content=middleware._retry_message), AIMessage(content="No report.")])
-
-        update = middleware.after_model(state, None)
-
-        assert update is not None
-        assert update["jump_to"] == "model"
 
 
 class TestToolNameSanitizationMiddleware:
@@ -1853,15 +1911,18 @@ class TestPlanPersistenceMiddleware:
         assert json.loads(content.decode("utf-8")) == {"answer_strategy": {"answer_type": "table"}}
 
     @pytest.mark.asyncio
-    async def test_no_structured_response_is_noop(self):
-        """Missing structured_response writes nothing rather than erroring."""
+    async def test_no_structured_response_reports_missing_plan_without_logging_model_text(self, caplog):
+        """Missing structured_response is visible without persisting or logging model text."""
         backend = _RecordingBackend()
         mw = PlanPersistenceMiddleware(backend=backend)
 
-        await mw.aafter_agent({"structured_response": None}, runtime=None)
-        await mw.aafter_agent({}, runtime=None)
+        await mw.aafter_agent(
+            {"structured_response": None, "messages": [AIMessage(content="private model response")]}, runtime=None
+        )
 
         assert backend.uploads == []
+        assert "Planner finished without a structured research plan" in caplog.text
+        assert "private model response" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_plan_accepts_exact_query_character_boundary(self):

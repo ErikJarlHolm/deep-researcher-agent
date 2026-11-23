@@ -682,7 +682,10 @@ def build_deep_research_graph(
                             sandbox_enabled=context.runtime.execution_enabled,
                         ),
                         TodoQuotaMiddleware(resource_limits=context.resource_limits),
-                        RequiredWriterDelegationMiddleware(tracker=context.final_report_tracker),
+                        RequiredWriterDelegationMiddleware(
+                            tracker=context.final_report_tracker,
+                            recovery_batch_size=0 if context.enable_source_router else context.max_research_concurrency,
+                        ),
                     ]
                 ),
                 permissions=context.permissions(ORCHESTRATOR_AGENT),
