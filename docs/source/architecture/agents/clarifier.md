@@ -53,6 +53,12 @@ graph TD
     style J fill:#fff3e0
 ```
 
+For clarification, string-valued tool results are limited to 12,000 characters
+in aggregate in the model's view, divided among results when necessary. The
+original messages remain in graph state. This is not a full model-context
+limit: conversation history, prompt content, and non-string tool outputs are
+not bounded by this mechanism. Clarification excerpts are not research evidence.
+
 ## State Model
 
 ### ClarifierAgentState

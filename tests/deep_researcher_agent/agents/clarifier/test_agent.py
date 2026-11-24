@@ -32,6 +32,7 @@ from nemo_relay.integrations.langchain import NemoRelayMiddleware
 from deep_researcher_agent.agents.clarifier.agent import DEFAULT_CLARIFICATION_PROMPT
 from deep_researcher_agent.agents.clarifier.agent import FORCE_SEARCH_GUIDANCE
 from deep_researcher_agent.agents.clarifier.agent import ClarifierAgent
+from deep_researcher_agent.agents.clarifier.agent import _clarifier_model_messages
 from deep_researcher_agent.agents.clarifier.models import ClarificationResponse
 from deep_researcher_agent.agents.clarifier.models import ClarifierAgentState
 from deep_researcher_agent.agents.clarifier.models import ClarifierResult
@@ -530,6 +531,42 @@ class TestClarifierForceSearch:
         provider = MagicMock(spec=LLMProvider)
         provider.get = MagicMock(return_value=mock_llm)
         return provider
+
+    @pytest.mark.asyncio
+    async def test_large_parallel_search_results_are_bounded_only_for_model(self, mock_llm_provider, mock_llm):
+        complete = ClarificationResponse(needs_clarification=False, clarification_question=None).model_dump_json()
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content=complete))
+        agent = ClarifierAgent(
+            llm_provider=mock_llm_provider, tools=[web_search_tool], user_prompt_callback=AsyncMock()
+        )
+        calls = [{"name": "web_search_tool", "args": {"query": str(i)}, "id": f"call-{i}"} for i in range(5)]
+        results = [
+            ToolMessage(content=str(i) * 20_000, tool_call_id=f"call-{i}", name="web_search_tool") for i in range(5)
+        ]
+        state = ClarifierAgentState(
+            messages=[
+                HumanMessage(content="Research these documents"),
+                AIMessage(content="", tool_calls=calls),
+                *results,
+            ]
+        )
+
+        graph_result = await agent._graph.ainvoke(state)
+
+        model_messages = mock_llm.ainvoke.call_args.args[0]
+        excerpts = [message for message in model_messages if isinstance(message, ToolMessage)]
+        assert len(excerpts) == 5
+        assert sum(len(message.content) for message in excerpts) <= 12_000
+        assert all("[... truncated for clarification ...]" in message.content for message in excerpts)
+        assert [message.tool_call_id for message in excerpts] == [message.tool_call_id for message in results]
+        saved = [message for message in graph_result["messages"] if isinstance(message, ToolMessage)]
+        assert [message.content for message in saved] == [message.content for message in results]
+
+    def test_short_and_non_text_tool_results_are_not_modified(self):
+        short = ToolMessage(content="brief", tool_call_id="one", status="error")
+        blocks = ToolMessage(content=[{"type": "text", "text": "content"}], tool_call_id="two")
+
+        assert _clarifier_model_messages([short, blocks]) == [short, blocks]
 
     @pytest.mark.asyncio
     async def test_force_search_fires_when_llm_skips_tools(self, mock_llm_provider, mock_llm):

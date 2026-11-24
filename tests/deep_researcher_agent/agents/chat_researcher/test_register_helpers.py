@@ -17,6 +17,8 @@
 
 import logging
 import uuid
+from contextvars import ContextVar
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,6 +31,115 @@ from deep_researcher_agent.agents.chat_researcher.models import WorkflowSuccess
 from deep_researcher_agent.agents.chat_researcher.utils import _extract_query_and_sources
 from deep_researcher_agent.agents.chat_researcher.utils import _extract_text_from_message
 from deep_researcher_agent.common.logging_utils import log_identifier_ref
+
+
+@pytest.mark.asyncio
+async def test_available_documents_includes_indexed_files_without_summaries(monkeypatch):
+    from deep_researcher_agent import knowledge
+    from deep_researcher_agent.agents.chat_researcher.register import _load_available_documents
+    from deep_researcher_agent.knowledge.schema import AvailableDocument
+    from deep_researcher_agent.knowledge.schema import FileInfo
+    from deep_researcher_agent.knowledge.schema import FileStatus
+
+    def file(name, collection, status):
+        return FileInfo(file_id=name, file_name=name, collection_name=collection, status=status)
+
+    summaries = AsyncMock(return_value=[AvailableDocument(file_name="summarized.pdf", summary="Summary")])
+    ingestor = MagicMock()
+    ingestor.list_files.return_value = [
+        file("summarized.pdf", "mine", FileStatus.SUCCESS),
+        file("unsummarized.pdf", "mine", FileStatus.SUCCESS),
+        file("failed.pdf", "mine", FileStatus.FAILED),
+        file("other.pdf", "other", FileStatus.SUCCESS),
+    ]
+    monkeypatch.setattr(knowledge, "get_available_documents_async", summaries)
+    monkeypatch.setattr(knowledge, "get_active_ingestor", lambda: ingestor)
+
+    documents = await _load_available_documents("mine")
+
+    summaries.assert_awaited_once_with("mine")
+    ingestor.list_files.assert_called_once_with("mine")
+    assert documents == [
+        AvailableDocument(file_name="summarized.pdf", summary="Summary"),
+        AvailableDocument(file_name="unsummarized.pdf"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_available_documents_logs_index_listing_failure(monkeypatch, caplog):
+    from deep_researcher_agent import knowledge
+    from deep_researcher_agent.agents.chat_researcher.register import _load_available_documents
+    from deep_researcher_agent.knowledge.schema import AvailableDocument
+
+    documents = [AvailableDocument(file_name="known.pdf", summary="Summary")]
+    monkeypatch.setattr(knowledge, "get_available_documents_async", AsyncMock(return_value=documents))
+    ingestor = MagicMock()
+    ingestor.list_files.side_effect = RuntimeError("private backend details")
+    monkeypatch.setattr(knowledge, "get_active_ingestor", lambda: ingestor)
+
+    assert await _load_available_documents("mine") == documents
+    assert "Could not list indexed documents (RuntimeError)" in caplog.text
+    assert "private backend details" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_available_documents_without_ingestor_retains_summaries(monkeypatch):
+    from deep_researcher_agent import knowledge
+    from deep_researcher_agent.agents.chat_researcher.register import _load_available_documents
+    from deep_researcher_agent.knowledge.schema import AvailableDocument
+
+    documents = [AvailableDocument(file_name="known.pdf", summary="Summary")]
+    monkeypatch.setattr(knowledge, "get_available_documents_async", AsyncMock(return_value=documents))
+    monkeypatch.setattr(knowledge, "get_active_ingestor", lambda: None)
+
+    assert await _load_available_documents("mine") == documents
+
+
+@pytest.mark.asyncio
+async def test_available_documents_falls_back_to_index_when_summary_store_fails(monkeypatch, caplog):
+    from deep_researcher_agent import knowledge
+    from deep_researcher_agent.agents.chat_researcher.register import _load_available_documents
+    from deep_researcher_agent.knowledge.schema import AvailableDocument
+    from deep_researcher_agent.knowledge.schema import FileInfo
+    from deep_researcher_agent.knowledge.schema import FileStatus
+
+    monkeypatch.setattr(
+        knowledge, "get_available_documents_async", AsyncMock(side_effect=RuntimeError("private database detail"))
+    )
+    ingestor = MagicMock()
+    ingestor.list_files.return_value = [
+        FileInfo(file_id="1", file_name="indexed.pdf", collection_name="mine", status=FileStatus.SUCCESS)
+    ]
+    monkeypatch.setattr(knowledge, "get_active_ingestor", lambda: ingestor)
+
+    assert await _load_available_documents("mine") == [AvailableDocument(file_name="indexed.pdf")]
+    assert "Could not load document summaries (RuntimeError)" in caplog.text
+    assert "private database detail" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_index_listing_preserves_request_context_in_worker_thread(monkeypatch):
+    from deep_researcher_agent import knowledge
+    from deep_researcher_agent.agents.chat_researcher.register import _load_available_documents
+
+    principal = ContextVar("principal")
+    token = principal.set("request-owner")
+    monkeypatch.setattr(knowledge, "get_available_documents_async", AsyncMock(return_value=[]))
+    ingestor = MagicMock()
+    monkeypatch.setattr(knowledge, "get_active_ingestor", lambda: ingestor)
+    observed = []
+
+    def list_files(_):
+        observed.append(principal.get(None))
+        return []
+
+    ingestor.list_files.side_effect = list_files
+    try:
+        assert await _load_available_documents("mine") == []
+        ingestor.list_files.assert_called_once_with("mine")
+        assert observed == ["request-owner"]
+    finally:
+        principal.reset(token)
 
 
 def test_conversation_log_uses_opaque_reference(caplog) -> None:

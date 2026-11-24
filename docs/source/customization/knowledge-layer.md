@@ -541,6 +541,11 @@ LlamaIndexIngestor initialized: persist_dir=/app/data/chroma_data, mode=text + t
 
 Document summaries help research agents understand what files are available before making tool calls. When enabled, the knowledge layer generates a one-sentence summary during ingestion and injects it into agent system prompts.
 
+For chat clarification, file names reported as successfully indexed by the active ingestor are also retrieved for
+the current collection when available, including documents without generated summaries. This metadata list can be
+incomplete or stale and is not proof that other documents are absent; actual source evidence must still be retrieved
+for research.
+
 ```yaml
 llms:
   summary_llm:

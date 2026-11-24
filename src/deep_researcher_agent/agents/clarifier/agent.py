@@ -74,6 +74,9 @@ from .models import ClarifierResult
 
 logger = logging.getLogger(__name__)
 
+_TOOL_TEXT_BUDGET = 12_000
+_TOOL_TEXT_TRUNCATION = "\n[... truncated for clarification ...]"
+
 AGENT_DIR = Path(__file__).parent
 """Path to the clarifier agent's directory, used for loading prompts."""
 
@@ -108,6 +111,27 @@ FORCE_SEARCH_GUIDANCE = (
 SKIPPED_CLARIFICATION_SENTINEL = "[skipped clarification]"
 """Stand-in user turn persisted when a skip reply is blank, so an empty
 HumanMessage is never written to state (some chat APIs reject empty content)."""
+
+
+def _clarifier_model_messages(messages: Sequence[Any]) -> list[Any]:
+    """Bound string tool results in the model view without modifying graph state."""
+    tool_messages = [
+        message for message in messages if isinstance(message, ToolMessage) and isinstance(message.content, str)
+    ]
+    if not tool_messages or sum(len(message.content) for message in tool_messages) <= _TOOL_TEXT_BUDGET:
+        return list(messages)
+
+    allowance = _TOOL_TEXT_BUDGET // len(tool_messages)
+    logger.info("Limiting text from %d clarification tool results", len(tool_messages))
+    result = []
+    for message in messages:
+        if isinstance(message, ToolMessage) and isinstance(message.content, str) and len(message.content) > allowance:
+            marker = _TOOL_TEXT_TRUNCATION[:allowance]
+            excerpt = message.content[: max(0, allowance - len(marker))]
+            result.append(message.model_copy(update={"content": excerpt + marker}))
+        else:
+            result.append(message)
+    return result
 
 
 class ClarifierAgent:
@@ -513,7 +537,7 @@ class ClarifierAgent:
             )
 
             # Build message list
-            messages = [SystemMessage(content=rendered_system_prompt)] + state.messages
+            messages = [SystemMessage(content=rendered_system_prompt), *_clarifier_model_messages(state.messages)]
 
             # If last message is a tool result, add JSON reminder to prevent report generation
             if state.messages and isinstance(state.messages[-1], ToolMessage):

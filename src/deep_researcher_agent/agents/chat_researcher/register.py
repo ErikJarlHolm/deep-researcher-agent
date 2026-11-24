@@ -36,6 +36,7 @@ from deep_researcher_agent.common.citation_verification import reset_session_reg
 from deep_researcher_agent.common.citation_verification import set_session_registry
 from deep_researcher_agent.common.logging_utils import log_content_metadata
 from deep_researcher_agent.common.logging_utils import log_identifier_ref
+from deep_researcher_agent.knowledge.schema import AvailableDocument
 from deep_researcher_agent.observability.otel_header_redaction_exporter import (
     ensure_registered as _ensure_otel_redaction_registered,
 )
@@ -103,6 +104,32 @@ def _resolve_submission_query(state) -> str:
 def _log_conversation_reference(message: str, conversation_id: str) -> None:
     """Log a correlation reference without exposing the conversation identifier."""
     logger.info(message, log_identifier_ref(conversation_id))
+
+
+async def _load_available_documents(collection_name: str) -> list[AvailableDocument]:
+    """Combine stored summaries with successfully indexed document names."""
+    from deep_researcher_agent.knowledge import get_active_ingestor
+    from deep_researcher_agent.knowledge import get_available_documents_async
+    from deep_researcher_agent.knowledge.schema import FileStatus
+
+    try:
+        documents = await get_available_documents_async(collection_name)
+    except Exception as exc:
+        logger.warning("Could not load document summaries (%s)", type(exc).__name__)
+        documents = []
+    ingestor = get_active_ingestor()
+    if ingestor is None:
+        return documents
+    try:
+        files = await asyncio.to_thread(ingestor.list_files, collection_name)
+    except Exception as exc:
+        logger.warning("Could not list indexed documents (%s)", type(exc).__name__)
+        return documents
+    by_name = {doc.file_name: doc for doc in documents}
+    for file in files:
+        if file.collection_name == collection_name and file.status == FileStatus.SUCCESS:
+            by_name.setdefault(file.file_name, AvailableDocument(file_name=file.file_name))
+    return list(by_name.values())
 
 
 def _render_workflow_response(
@@ -787,28 +814,25 @@ async def chat_deepresearcher_agent(config: ChatDeepResearcherConfig, builder: B
         logger.info("ChatDeepResearcherAgent query_%s", log_content_metadata(query_text))
         logger.info("ChatDeepResearcherAgent: data_source_count=%d", len(data_sources or []))
 
-        # Fetch available documents with summaries from SQLite registry
-        # The registry is populated by backends during ingestion (backend-agnostic)
+        # Fetch known document names and optional summaries for this collection.
         available_documents = None
         try:
-            from deep_researcher_agent.knowledge import get_available_documents_async
-
             # Get collection from session context (conversation_id = collection_name)
             collection_name = Context.get().conversation_id if Context.get() else None
 
             if collection_name:
                 collection_ref = log_identifier_ref(collection_name)
-                available_documents = await get_available_documents_async(collection_name)
+                available_documents = await _load_available_documents(collection_name)
                 if available_documents:
                     logger.info(
-                        "Loaded %d document summaries from DB for collection_ref=%s",
+                        "Loaded %d known documents for collection_ref=%s",
                         len(available_documents),
                         collection_ref,
                     )
                     for doc in available_documents:
                         logger.debug("  [summary] [file]: %s", "available" if doc.summary else "none")
                 else:
-                    logger.info("No document summaries in DB for collection_ref=%s", collection_ref)
+                    logger.info("No known documents for collection_ref=%s", collection_ref)
             else:
                 logger.debug("No session context - cannot determine collection")
         except Exception as e:
