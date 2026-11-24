@@ -20,20 +20,28 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
+import httpx
 import pytest
 from deepagents.backends import CompositeBackend
+from deepagents.backends import FilesystemBackend
 from deepagents.backends import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelResponse
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool
+from openai import BadRequestError
 
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ArtifactHarvestMiddleware
+from deep_researcher_agent.agents.deep_researcher.custom_middleware import ContextAwareModelRetryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ExecuteTimeoutClampMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FilesystemToolCallGuardMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FinalReportCommitMiddleware
@@ -42,6 +50,7 @@ from deep_researcher_agent.agents.deep_researcher.custom_middleware import Final
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import PlanPersistenceMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import RequiredOutputFileMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import RequiredWriterDelegationMiddleware
+from deep_researcher_agent.agents.deep_researcher.custom_middleware import ResearchBatchRetryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import SourceRoutingGuardMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import SourceRoutingPersistenceMiddleware
@@ -50,6 +59,7 @@ from deep_researcher_agent.agents.deep_researcher.custom_middleware import Struc
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import TodoQuotaMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import TodoSuppressionMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolNameSanitizationMiddleware
+from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolResultPruningMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolRetryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolVisibilityMiddleware
 from deep_researcher_agent.agents.deep_researcher.models import SourceRoutingPlan
@@ -67,6 +77,295 @@ class _ToolBindingFakeChatModel(FakeMessagesListChatModel):
 
     def bind_tools(self, tools, *, tool_choice=None, **kwargs):
         return self
+
+
+def _bad_request(message: str, param: str = "input_tokens") -> BadRequestError:
+    response = httpx.Response(400, request=httpx.Request("POST", "https://example.test"))
+    return BadRequestError(
+        message,
+        response=response,
+        body={"message": message, "param": param, "code": 400},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        _bad_request("This model's maximum context length is exceeded: private content"),
+        ContextOverflowError("Provider context overflow"),
+    ],
+)
+async def test_context_overflow_bypasses_model_retries_and_reaches_summarizer(error):
+    middleware = ContextAwareModelRetryMiddleware()
+    handler = AsyncMock(side_effect=error)
+
+    with pytest.raises(ContextOverflowError) as raised:
+        await middleware.awrap_model_call(MagicMock(), handler)
+
+    handler.assert_awaited_once()
+    if isinstance(error, BadRequestError):
+        assert "private content" not in str(raised.value)
+
+
+def test_synchronous_model_context_overflow_is_propagated():
+    middleware = ContextAwareModelRetryMiddleware()
+    handler = MagicMock(side_effect=_bad_request("This model's maximum context length was exceeded"))
+
+    with pytest.raises(ContextOverflowError):
+        middleware.wrap_model_call(MagicMock(), handler)
+
+    handler.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "param"),
+    [
+        ("Unsupported input", "input_tokens"),
+        ("This model's maximum context length was exceeded", "other_parameter"),
+    ],
+)
+async def test_unrelated_bad_requests_retain_model_retry_behavior(message, param):
+    middleware = ContextAwareModelRetryMiddleware()
+    middleware.initial_delay = 0
+    expected = ModelResponse(result=[AIMessage(content="ok")])
+    handler = AsyncMock(side_effect=[_bad_request(message, param=param), expected])
+
+    assert await middleware.awrap_model_call(MagicMock(), handler) is expected
+    assert handler.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_context_overflow_triggers_summarization_in_agent(tmp_path):
+    class OverflowOnceModel(_ToolBindingFakeChatModel):
+        calls: int = 0
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise _bad_request("This model's maximum context length was exceeded")
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = OverflowOnceModel(responses=[AIMessage(content="Earlier evidence summary"), AIMessage(content="Done")])
+    backend = FilesystemBackend(root_dir=tmp_path)
+    agent = create_agent(
+        model=model,
+        middleware=[create_summarization_middleware(model, backend), ContextAwareModelRetryMiddleware()],
+    )
+    messages = [
+        HumanMessage(content=f"evidence-{i} " + "text " * 500)
+        if i % 2 == 0
+        else AIMessage(content=f"answer-{i} " + "text " * 500)
+        for i in range(12)
+    ]
+
+    result = await agent.ainvoke({"messages": messages})
+
+    assert model.calls == 3
+    assert result["messages"][-1].content == "Done"
+    saved = list(tmp_path.rglob("*.md"))
+    assert saved
+    assert "evidence-0" in saved[0].read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ["filesystem", "state"])
+async def test_context_overflow_offloads_large_latest_source_result(tmp_path, backend_kind):
+    class OverflowOnceModel(_ToolBindingFakeChatModel):
+        calls: int = 0
+        last_messages: list = []
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise _bad_request("This model's maximum context length was exceeded")
+            self.last_messages = messages
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    @tool
+    def knowledge_search(query: str) -> str:
+        """Search documents."""
+        return query
+
+    model = OverflowOnceModel(
+        responses=[
+            AIMessage(content="Earlier evidence summary"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_file",
+                        "args": {"file_path": "/large_tool_results/source-1", "offset": 1500, "limit": 5},
+                        "id": "read-1",
+                    }
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    backend = FilesystemBackend(root_dir=tmp_path) if backend_kind == "filesystem" else StateBackend()
+    agent = create_agent(
+        model=model,
+        tools=[knowledge_search],
+        middleware=[
+            FilesystemMiddleware(backend=backend),
+            create_summarization_middleware(model, backend),
+            ContextAwareModelRetryMiddleware(),
+        ],
+    )
+    source = ("evidence " * 10 + "\n") * 1500 + "middle-source-marker\n" + ("evidence " * 10 + "\n") * 1500
+    messages = [
+        HumanMessage(content=f"question-{i} " + "text " * 500)
+        if i % 2 == 0
+        else AIMessage(content=f"answer-{i} " + "text " * 500)
+        for i in range(10)
+    ]
+    messages.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "knowledge_search", "args": {"query": "q"}, "id": "source-1"}],
+            ),
+            ToolMessage(content=source, tool_call_id="source-1", name="knowledge_search"),
+        ]
+    )
+
+    result = await agent.ainvoke({"messages": messages})
+
+    assert result["messages"][-1].content == "Done"
+    if backend_kind == "filesystem":
+        saved = [path.read_text(encoding="utf-8") for path in tmp_path.rglob("*") if path.is_file()]
+    else:
+        saved = [
+            "\n".join(entry["content"]) if isinstance(entry["content"], list) else entry["content"]
+            for entry in result["files"].values()
+        ]
+    assert any("middle-source-marker" in content for content in saved)
+    visible_source = [
+        message.content
+        for message in model.last_messages
+        if isinstance(message, ToolMessage) and message.name == "knowledge_search"
+    ]
+    assert visible_source and "middle-source-marker" not in visible_source[0]
+    assert "read_file" in visible_source[0]
+    assert any(
+        isinstance(message, ToolMessage) and message.name == "read_file" and "middle-source-marker" in message.content
+        for message in model.last_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_research_batch_is_not_replayed():
+    middleware = ResearchBatchRetryMiddleware(batch_tool_name="run_research_batch")
+    request = SimpleNamespace(tool=None, tool_call={"name": "run_research_batch", "id": "batch-1"})
+    handler = AsyncMock(side_effect=RuntimeError("input position 2 failed; other notes were persisted"))
+
+    result = await middleware.awrap_tool_call(request, handler)
+
+    handler.assert_awaited_once()
+    assert result.status == "error"
+    assert "input position 2 failed" in result.content
+    assert result.tool_call_id == "batch-1"
+
+
+@pytest.mark.asyncio
+async def test_other_orchestrator_tools_still_retry():
+    middleware = ResearchBatchRetryMiddleware(batch_tool_name="run_research_batch")
+    middleware.initial_delay = 0
+    request = SimpleNamespace(tool=None, tool_call={"name": "read_file", "id": "read-1"})
+    result_message = ToolMessage(content="ok", tool_call_id="read-1")
+    handler = AsyncMock(side_effect=[RuntimeError("temporary"), result_message])
+
+    assert await middleware.awrap_tool_call(request, handler) is result_message
+    assert handler.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_batch_returns_error_to_agent_without_reinvocation():
+    attempts = 0
+
+    @tool
+    async def run_research_batch(query: str) -> str:
+        """Run a batch of research."""
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("input position 1 failed; other notes were persisted")
+
+    model = _ToolBindingFakeChatModel(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "run_research_batch", "args": {"query": "q"}, "id": "batch-1"}]),
+            AIMessage(content="Finished."),
+        ]
+    )
+    agent = create_agent(
+        model=model,
+        tools=[run_research_batch],
+        middleware=[ResearchBatchRetryMiddleware(batch_tool_name="run_research_batch")],
+    )
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Research")]})
+
+    assert attempts == 1
+    errors = [message for message in result["messages"] if isinstance(message, ToolMessage)]
+    assert len(errors) == 1
+    assert errors[0].status == "error"
+    assert "input position 1" in errors[0].content
+
+
+def test_synchronous_failed_research_batch_is_not_replayed():
+    middleware = ResearchBatchRetryMiddleware(batch_tool_name="run_research_batch")
+    request = SimpleNamespace(tool=None, tool_call={"name": "run_research_batch", "id": "batch-1"})
+    handler = MagicMock(side_effect=RuntimeError("batch failed"))
+
+    result = middleware.wrap_tool_call(request, handler)
+
+    handler.assert_called_once()
+    assert result.status == "error"
+    assert result.tool_call_id == "batch-1"
+
+
+@pytest.mark.asyncio
+async def test_planner_prunes_all_tool_results_without_losing_metadata():
+    message = ToolMessage(
+        content="x" * 20,
+        tool_call_id="call-1",
+        name="knowledge_search",
+        status="error",
+        artifact={"source": "original"},
+    )
+    request = MagicMock()
+    request.messages = [HumanMessage(content="Question"), message]
+    request.override.side_effect = lambda **kwargs: SimpleNamespace(**kwargs)
+    handler = AsyncMock(return_value="result")
+
+    result = await ToolResultPruningMiddleware(keep_last_n=0, max_chars=10).awrap_model_call(request, handler)
+
+    assert result == "result"
+    pruned = handler.await_args.args[0].messages[1]
+    assert pruned.content == "x" * 10 + "\n\n[... truncated ...]"
+    assert pruned.tool_call_id == message.tool_call_id
+    assert pruned.status == "error"
+    assert pruned.artifact == message.artifact
+    assert message.content == "x" * 20
+
+
+@pytest.mark.asyncio
+async def test_pruning_preserves_recent_tool_results_for_other_agents():
+    messages = [
+        ToolMessage(content="first result", tool_call_id="first"),
+        ToolMessage(content="second result", tool_call_id="second"),
+    ]
+    request = MagicMock()
+    request.messages = messages
+    request.override.side_effect = lambda **kwargs: SimpleNamespace(**kwargs)
+    handler = AsyncMock()
+
+    await ToolResultPruningMiddleware(keep_last_n=1, max_chars=5).awrap_model_call(request, handler)
+
+    pruned = handler.await_args.args[0].messages
+    assert pruned[0].content == "first\n\n[... truncated ...]"
+    assert pruned[1] is messages[1]
 
 
 class TestStructuredResponseTextFallbackMiddleware:
@@ -161,6 +460,67 @@ class TestStructuredResponseTextFallbackMiddleware:
         assert result is responses[1]
         assert result.structured_response is None
         assert handler.await_args_list == [((request,),), ((corrected_request,),)]
+
+    @pytest.mark.parametrize(
+        ("content", "finish_reason", "expected_reason", "expected_shape", "expected_json_error", "expected_finish"),
+        [
+            ("", "stop", "empty", "empty", "none", "stop"),
+            ('{"secret": "private-value"', "length", "invalid_json", "object", "expected_delimiter", "length"),
+            ('{"secret": "private-value"}', "private-value", "schema_mismatch", "object", "none", "other"),
+            ("```json\nprivate-value", "stop", "invalid_json", "fenced", "expected_value", "stop"),
+            ("private-value", "stop", "invalid_json", "other", "expected_value", "stop"),
+            ("{} private-value", "stop", "invalid_json", "object", "extra_data", "stop"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_failed_correction_logs_only_safe_diagnostics(
+        self, content, finish_reason, expected_reason, expected_shape, expected_json_error, expected_finish, caplog
+    ) -> None:
+        responses = [
+            ModelResponse(result=[AIMessage(content="initial-private-value")]),
+            ModelResponse(
+                result=[
+                    AIMessage(
+                        content=content,
+                        response_metadata={"finish_reason": finish_reason},
+                        usage_metadata={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                    )
+                ]
+            ),
+        ]
+        request = MagicMock()
+        request.messages = [HumanMessage(content="Route this request.")]
+        handler = AsyncMock(side_effect=responses)
+        middleware = StructuredResponseTextFallbackMiddleware(SourceRoutingPlan)
+
+        result = await middleware.awrap_model_call(request, handler)
+
+        assert result is responses[1]
+        assert f"reason={expected_reason}" in caplog.text
+        assert f"shape={expected_shape}" in caplog.text
+        assert f"json_error={expected_json_error}" in caplog.text
+        assert f"finish_reason={expected_finish}" in caplog.text
+        assert "output_tokens=20" in caplog.text
+        assert "private-value" not in caplog.text
+        assert "secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_json_diagnostic_parser_failure_does_not_change_result(self, caplog) -> None:
+        responses = [
+            ModelResponse(result=[AIMessage(content="initial")]),
+            ModelResponse(result=[AIMessage(content="invalid")]),
+        ]
+        request = MagicMock()
+        request.messages = [HumanMessage(content="Route this request.")]
+        middleware = StructuredResponseTextFallbackMiddleware(SourceRoutingPlan)
+
+        with patch(
+            "deep_researcher_agent.agents.deep_researcher.custom_middleware.json.loads", side_effect=RecursionError
+        ):
+            result = await middleware.awrap_model_call(request, AsyncMock(side_effect=responses))
+
+        assert result is responses[1]
+        assert "json_error=other" in caplog.text
 
     @pytest.mark.asyncio
     async def test_preserves_native_structured_response(self) -> None:
@@ -717,9 +1077,19 @@ class TestFinalReportCommitMiddleware:
         assert first.committed_text({"/shared/output.md": {"content": "# First run"}}) == "# First run"
         assert second.committed_text({"/shared/output.md": {"content": "# First run"}}) is None
 
+    def test_legacy_line_list_still_requires_exact_committed_content(self) -> None:
+        tracker = FinalReportCommitTracker()
+        tracker.record("# Report\n\nConclusion\n")
+
+        assert tracker.committed_text({"/shared/output.md": {"content": ["# Report", "", "Conclusion", ""]}}) == (
+            "# Report\n\nConclusion\n"
+        )
+        assert tracker.committed_text({"/shared/output.md": {"content": ["# Report", "", "Changed", ""]}}) is None
+        assert tracker.committed_text({"/shared/output.md": {"content": ["# Report", 1]}}) is None
+
 
 class TestRequiredOutputFileMiddleware:
-    """The writer may only claim completion after committing the current bytes."""
+    """The writer may only finish after committing the current bytes."""
 
     marker = "Wrote /shared/output.md"
 
@@ -762,6 +1132,7 @@ class TestRequiredOutputFileMiddleware:
         assert isinstance(correction, HumanMessage)
         assert "Call write_file" in str(correction.content)
         assert "Do not repeat research" in str(correction.content)
+        assert "Read any required inputs not yet read" in str(correction.content)
 
     def test_committed_whitespace_only_output_is_still_rejected(self) -> None:
         content = " \r\n"
@@ -800,6 +1171,62 @@ class TestRequiredOutputFileMiddleware:
 
         assert middleware.after_model(state, None) is None
 
+    def test_ends_post_commit_tool_call_with_completion_marker(self) -> None:
+        content = "# Writer report"
+        tracker = FinalReportCommitTracker()
+        tracker.record(content)
+        middleware = RequiredOutputFileMiddleware(tracker=tracker)
+        state = self._state(
+            files={"/shared/output.md": {"content": content}},
+            messages=[
+                AIMessage(
+                    id="writer-next-tool-call",
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "/shared/research_note_1.json"},
+                            "id": "tc1",
+                        }
+                    ],
+                )
+            ],
+        )
+
+        update = middleware.after_model(state, None)
+
+        assert update is not None
+        assert update["jump_to"] == "end"
+        terminal_message = update["messages"][0]
+        assert terminal_message.id == "writer-next-tool-call"
+        assert terminal_message.content == self.marker
+        assert terminal_message.tool_calls == []
+
+    def test_normalizes_post_commit_response_to_completion_marker(self) -> None:
+        content = "# Writer report"
+        tracker = FinalReportCommitTracker()
+        tracker.record(content)
+        middleware = RequiredOutputFileMiddleware(tracker=tracker)
+        state = self._state(
+            files={"/shared/output.md": {"content": content}},
+            messages=[AIMessage(id="writer-final-response", content="Report is ready.")],
+        )
+
+        update = middleware.after_model(state, None)
+
+        assert update is not None
+        assert update["jump_to"] == "end"
+        assert update["messages"][0].content == self.marker
+
+    @pytest.mark.parametrize("response", ["", "I could not finish.", '{"file_path": "/shared/output.md"}'])
+    def test_uncommitted_non_marker_response_requests_correction(self, response: str) -> None:
+        middleware = RequiredOutputFileMiddleware(tracker=FinalReportCommitTracker())
+
+        update = middleware.after_model(self._state(messages=[AIMessage(content=response)]), None)
+
+        assert update is not None
+        assert update["jump_to"] == "model"
+
     @pytest.mark.asyncio
     async def test_async_retry_accepts_repaired_route_local_output(self) -> None:
         tracker = FinalReportCommitTracker()
@@ -814,13 +1241,12 @@ class TestRequiredOutputFileMiddleware:
 
         assert await middleware.aafter_model(repaired, None) is None
 
-    def test_repeated_false_completion_fails_with_stable_reason_code(self) -> None:
+    @pytest.mark.parametrize("response", ["", "I could not finish.", "Wrote /shared/output.md"])
+    def test_repeated_uncommitted_completion_fails_with_stable_reason_code(self, response: str) -> None:
         middleware = RequiredOutputFileMiddleware(tracker=FinalReportCommitTracker())
-        first = middleware.after_model(self._state(), None)
+        first = middleware.after_model(self._state(messages=[AIMessage(content=response)]), None)
         correction = first["messages"][0]
-        still_missing = self._state(
-            messages=[AIMessage(content=self.marker), correction, AIMessage(content=self.marker)]
-        )
+        still_missing = self._state(messages=[AIMessage(content=response), correction, AIMessage(content=response)])
 
         with pytest.raises(RuntimeError, match="^writer_output_not_committed$"):
             middleware.after_model(still_missing, None)
@@ -881,6 +1307,53 @@ class TestRequiredOutputFileMiddleware:
         assert tracker.committed_text(result["files"]) == "# Writer report"
 
     @pytest.mark.asyncio
+    async def test_graph_ends_before_post_commit_tool_calls(self) -> None:
+        """A writer cannot keep reading after its report has been committed."""
+        model = _ToolBindingFakeChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/shared/output.md", "content": "# Writer report"},
+                            "id": "write-report",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "/shared/research_note_1.json"},
+                            "id": "read-after-commit",
+                        }
+                    ],
+                ),
+            ]
+        )
+        backend = StateBackend()
+        tracker = FinalReportCommitTracker()
+        graph = create_agent(
+            model,
+            tools=[],
+            middleware=[
+                FilesystemMiddleware(backend=backend),
+                FinalReportCommitMiddleware(backend=backend, tracker=tracker),
+                RequiredOutputFileMiddleware(tracker=tracker),
+            ],
+        )
+
+        result = await graph.ainvoke({"messages": [HumanMessage(content="Write the report")]})
+
+        assert tracker.committed_text(result["files"]) == "# Writer report"
+        assert result["messages"][-1].content == self.marker
+        assert not any(
+            isinstance(message, ToolMessage) and message.name == "read_file" for message in result["messages"]
+        )
+
+    @pytest.mark.asyncio
     async def test_graph_stops_after_bounded_false_completion_retry(self) -> None:
         model = _ToolBindingFakeChatModel(
             responses=[
@@ -902,6 +1375,40 @@ class TestRequiredOutputFileMiddleware:
                     "files": {"/shared/output.md": {"content": "# Planner prose"}},
                 }
             )
+
+    @pytest.mark.asyncio
+    async def test_graph_repairs_empty_final_response_with_writer_commit(self) -> None:
+        model = _ToolBindingFakeChatModel(
+            responses=[
+                AIMessage(content=""),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/shared/output.md", "content": "# Writer report"},
+                            "id": "tc1",
+                        }
+                    ],
+                ),
+                AIMessage(content=self.marker),
+            ]
+        )
+        backend = StateBackend()
+        tracker = FinalReportCommitTracker()
+        graph = create_agent(
+            model,
+            tools=[],
+            middleware=[
+                FilesystemMiddleware(backend=backend),
+                FinalReportCommitMiddleware(backend=backend, tracker=tracker),
+                RequiredOutputFileMiddleware(tracker=tracker),
+            ],
+        )
+
+        result = await graph.ainvoke({"messages": [HumanMessage(content="Write the report")]})
+
+        assert tracker.committed_text(result["files"]) == "# Writer report"
 
 
 class TestRequiredWriterDelegationMiddleware:
@@ -1675,6 +2182,59 @@ class TestSourceRegistryMiddleware:
         assert "other.pdf, p.9" not in compact
         assert "report.pdf, p.5" in full
         assert "other.pdf, p.9" in full
+
+    @pytest.mark.parametrize(
+        "locators",
+        [
+            ["report.pdf, p.9"],
+            ["REPORT.PDF, p.9", "report.pdf, p.5"],
+            ["report.pdf"],
+        ],
+    )
+    def test_compact_document_match_does_not_claim_a_different_page(self, middleware, locators):
+        source = SourceEntry(citation_key="report.pdf, p.5", title="report.pdf", source_type="knowledge_layer")
+        middleware.registry.add(source)
+        middleware.registry.add(
+            SourceEntry(citation_key="other.pdf, p.9", title="other.pdf", source_type="knowledge_layer")
+        )
+        middleware.register_research_note_sources(
+            [SimpleNamespace(sources=[SimpleNamespace(locator=locator) for locator in locators])]
+        )
+
+        compact = middleware.get_source_entries()
+        assert [entry.citation_key for entry in compact] == ["report.pdf"]
+        assert middleware.registry.has_citation_key(compact[0].citation_key)
+        assert source.citation_key == "report.pdf, p.5"
+        assert [entry.citation_key for entry in middleware.get_source_entries(mode="full")] == [
+            "report.pdf, p.5",
+            "other.pdf, p.9",
+        ]
+
+    def test_compact_keeps_exact_page_and_excludes_other_documents(self, middleware):
+        middleware.registry.add(
+            SourceEntry(citation_key="report.pdf, p.5", title="report.pdf", source_type="knowledge_layer")
+        )
+        middleware.registry.add(
+            SourceEntry(citation_key="other.pdf, p.5", title="other.pdf", source_type="knowledge_layer")
+        )
+        middleware.registry.add(SourceEntry(url="https://used.example/source"))
+        middleware.register_research_note_sources(
+            [
+                SimpleNamespace(
+                    sources=[
+                        SimpleNamespace(locator="report.pdf, p.5"),
+                        SimpleNamespace(locator="https://used.example/source"),
+                        SimpleNamespace(locator="different.pdf, p.5"),
+                    ]
+                )
+            ]
+        )
+
+        entries = middleware.get_source_entries()
+        assert [(entry.citation_key, entry.url) for entry in entries] == [
+            ("report.pdf, p.5", None),
+            (None, "https://used.example/source"),
+        ]
 
     # -- Edge cases --
 

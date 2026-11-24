@@ -22,18 +22,23 @@ import logging
 import posixpath
 import re
 import threading
+from dataclasses import replace
 from pathlib import Path
 from pathlib import PurePosixPath
 from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import ModelRetryMiddleware
+from langchain.agents.middleware import ToolRetryMiddleware as LangChainToolRetryMiddleware
 from langchain.agents.middleware import hook_config
 from langchain.agents.middleware.types import ModelResponse
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.messages import ToolMessage
+from openai import BadRequestError
 from pydantic import BaseModel
 from pydantic import ValidationError
 
@@ -42,6 +47,7 @@ from deep_researcher_agent.common import load_prompt
 from deep_researcher_agent.common import render_prompt_template
 from deep_researcher_agent.common.citation_verification import SourceEntry
 from deep_researcher_agent.common.citation_verification import SourceRegistry
+from deep_researcher_agent.common.citation_verification import _parse_citation_key
 from deep_researcher_agent.common.citation_verification import extract_sources_from_tool_result
 from deep_researcher_agent.common.citation_verification import is_non_citable_status_output
 from deep_researcher_agent.common.logging_utils import log_content_metadata
@@ -106,6 +112,8 @@ def _entry_text(entry: object) -> str | None:
             return None
     if isinstance(entry, str):
         return entry
+    if isinstance(entry, list) and all(isinstance(line, str) for line in entry):
+        return "\n".join(entry)
     return None
 
 
@@ -113,6 +121,55 @@ def _tool_result_failed(result: object) -> bool:
     """Return whether a filesystem tool result reports an error."""
     status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
     return status == "error"
+
+
+def _is_context_overflow(exc: BaseException) -> bool:
+    if isinstance(exc, ContextOverflowError):
+        return True
+    if not isinstance(exc, BadRequestError) or not isinstance(exc.body, dict):
+        return False
+    message = exc.body.get("message")
+    return (
+        exc.body.get("param") == "input_tokens"
+        and isinstance(message, str)
+        and "maximum context length" in message.lower()
+    )
+
+
+class ContextAwareModelRetryMiddleware(ModelRetryMiddleware):
+    """Let context overflow reach DeepAgents' summarization middleware."""
+
+    def __init__(self) -> None:
+        super().__init__(max_retries=2, backoff_factor=2.0, initial_delay=1.0)
+        original_retry_on = self.retry_on
+
+        def retry_on(exc: Exception) -> bool:
+            if _is_context_overflow(exc):
+                return False
+            return original_retry_on(exc) if callable(original_retry_on) else isinstance(exc, original_retry_on)
+
+        self.retry_on = retry_on
+
+    def _handle_failure(self, exc, attempts_made):
+        if _is_context_overflow(exc):
+            raise exc
+        return super()._handle_failure(exc, attempts_made)
+
+    def wrap_model_call(self, request, handler):
+        try:
+            return super().wrap_model_call(request, handler)
+        except BadRequestError as exc:
+            if _is_context_overflow(exc):
+                raise ContextOverflowError("Model input exceeds the available context.") from None
+            raise
+
+    async def awrap_model_call(self, request, handler):
+        try:
+            return await super().awrap_model_call(request, handler)
+        except BadRequestError as exc:
+            if _is_context_overflow(exc):
+                raise ContextOverflowError("Model input exceeds the available context.") from None
+            raise
 
 
 class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
@@ -127,7 +184,7 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
             f"{schema_json}"
         )
 
-    def _promote(self, response: ModelResponse) -> ModelResponse:
+    def _promote(self, response: ModelResponse, *, log_invalid: bool = False) -> ModelResponse:
         if response.structured_response is not None or len(response.result) != 1:
             return response
         message = response.result[0]
@@ -135,7 +192,60 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
             return response
         try:
             structured = self.schema.model_validate_json(message.content)
-        except ValidationError:
+        except ValidationError as exc:
+            if log_invalid:
+                errors = exc.errors(include_url=False, include_context=False, include_input=False)
+                if not message.content.strip():
+                    reason = "empty"
+                elif any(error["type"] == "json_invalid" for error in errors):
+                    reason = "invalid_json"
+                else:
+                    reason = "schema_mismatch"
+                text = message.content.lstrip()
+                if not text:
+                    shape = "empty"
+                elif text.startswith("```"):
+                    shape = "fenced"
+                elif text.startswith("{"):
+                    shape = "object"
+                elif text.startswith("["):
+                    shape = "array"
+                else:
+                    shape = "other"
+                json_error = "none"
+                if reason == "invalid_json":
+                    try:
+                        json.loads(message.content)
+                        json_error = "accepted_by_stdlib"
+                    except json.JSONDecodeError as json_exc:
+                        json_error = {
+                            "Extra data": "extra_data",
+                            "Expecting ',' delimiter": "expected_delimiter",
+                            "Expecting ':' delimiter": "expected_colon",
+                            "Expecting value": "expected_value",
+                            "Unterminated string starting at": "unterminated_string",
+                            "Invalid control character at": "invalid_control",
+                            "Expecting property name enclosed in double quotes": "expected_property",
+                        }.get(json_exc.msg, "other")
+                    except (ValueError, RecursionError):
+                        json_error = "other"
+                finish_reason = message.response_metadata.get("finish_reason")
+                if finish_reason not in ("stop", "length", "tool_calls", "content_filter"):
+                    finish_reason = "other"
+                output_tokens = (message.usage_metadata or {}).get("output_tokens")
+                if not isinstance(output_tokens, int) or isinstance(output_tokens, bool) or output_tokens < 0:
+                    output_tokens = None
+                logger.warning(
+                    "%s text correction failed (reason=%s, shape=%s, json_error=%s, chars=%d, "
+                    "finish_reason=%s, output_tokens=%s)",
+                    self.schema.__name__,
+                    reason,
+                    shape,
+                    json_error,
+                    len(message.content),
+                    finish_reason,
+                    output_tokens,
+                )
             return response
         logger.info("Recovered %s from schema-valid JSON message content", self.schema.__name__)
         return ModelResponse(result=response.result, structured_response=structured)
@@ -161,7 +271,7 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
         if not self._needs_correction(response) or _is_researcher_finalization_request(request):
             return response
         logger.warning("Retrying %s as a tools-disabled JSON response", self.schema.__name__)
-        return self._promote(handler(self._correction_request(request)))
+        return self._promote(handler(self._correction_request(request)), log_invalid=True)
 
     async def awrap_model_call(self, request, handler):
         """Promote JSON text, with one tools-disabled corrective call when needed."""
@@ -169,7 +279,7 @@ class StructuredResponseTextFallbackMiddleware(AgentMiddleware):
         if not self._needs_correction(response) or _is_researcher_finalization_request(request):
             return response
         logger.warning("Retrying %s as a tools-disabled JSON response", self.schema.__name__)
-        return self._promote(await handler(self._correction_request(request)))
+        return self._promote(await handler(self._correction_request(request)), log_invalid=True)
 
 
 def _is_researcher_finalization_request(request) -> bool:
@@ -647,11 +757,11 @@ class FinalReportCommitMiddleware(AgentMiddleware):
 
 
 class RequiredOutputFileMiddleware(AgentMiddleware):
-    """Verify a model's file-backed completion marker before ending its run.
+    """Verify file-backed output before the writer ends its run.
 
-    A model can claim that it wrote a file without making the filesystem tool call.
-    Keep recovery local to that agent: request one corrective model turn, then fail
-    with a stable reason code instead of restarting the surrounding workflow.
+    A model can finish without committing a report, including with an empty
+    response. Request one corrective model turn, then fail with a stable reason
+    code instead of restarting the surrounding workflow.
     """
 
     def __init__(
@@ -676,6 +786,7 @@ class RequiredOutputFileMiddleware(AgentMiddleware):
         self._retry_message = (
             "The final report is missing, empty, or was not committed by this writer run. "
             "Do not repeat research or regenerate artifacts. "
+            "Read any required inputs not yet read and finish synthesis. "
             f"Call write_file with file_path={paths[0]} and the complete final Markdown, confirm the tool "
             f"succeeds, and only then return `{completion_marker}`."
         )
@@ -700,18 +811,34 @@ class RequiredOutputFileMiddleware(AgentMiddleware):
         if not isinstance(messages, list) or not messages:
             return None
         last_message = messages[-1]
-        if not isinstance(last_message, AIMessage) or last_message.tool_calls:
-            return None
-        if last_message.text.strip() != self.completion_marker:
+        if not isinstance(last_message, AIMessage):
             return None
         if self._required_output_is_committed(state):
+            if last_message.tool_calls or last_message.content != self.completion_marker:
+                logger.info("Writer attempted to continue after committing the final report; ending the writer run")
+                return {
+                    "messages": [
+                        last_message.model_copy(
+                            update={
+                                "content": self.completion_marker,
+                                "tool_calls": [],
+                                "invalid_tool_calls": [],
+                                "additional_kwargs": {},
+                            }
+                        )
+                    ],
+                    "jump_to": "end",
+                }
+            return None
+        if last_message.tool_calls:
             return None
 
         retry_count = self._retry_count(messages)
         if retry_count >= self.max_retries:
+            logger.warning("Writer did not commit the required output after its corrective turn")
             raise RuntimeError(self.reason_code)
 
-        logger.warning("Agent reported completion before committing the required output; requesting corrective turn")
+        logger.warning("Writer ended without committing the required output; requesting corrective turn")
         return {
             "messages": [
                 HumanMessage(
@@ -722,14 +849,14 @@ class RequiredOutputFileMiddleware(AgentMiddleware):
             "jump_to": "model",
         }
 
-    @hook_config(can_jump_to=["model"])
+    @hook_config(can_jump_to=["model", "end"])
     def after_model(self, state, runtime):
-        """Verify synchronous writer completion and request one local repair when needed."""
+        """Verify synchronous writer completion and stop post-commit tool loops."""
         return self._check_after_model(state)
 
-    @hook_config(can_jump_to=["model"])
+    @hook_config(can_jump_to=["model", "end"])
     async def aafter_model(self, state, runtime):
-        """Verify asynchronous writer completion and request one local repair when needed."""
+        """Verify asynchronous writer completion and stop post-commit tool loops."""
         return self._check_after_model(state)
 
 
@@ -799,6 +926,7 @@ class RequiredWriterDelegationMiddleware(AgentMiddleware):
         if self.tracker.committed_text(files, paths=FINAL_REPORT_STATE_PATHS) is not None:
             return None
         if self._retry_count(messages) >= self.max_retries:
+            logger.warning("Orchestrator ended without a committed writer report after recovery")
             raise RuntimeError(self.reason_code)
 
         query = next((message.text for message in reversed(messages) if isinstance(message, HumanMessage)), "")
@@ -1131,6 +1259,29 @@ class ToolRetryMiddleware(AgentMiddleware):
         raise last_exception
 
 
+class ResearchBatchRetryMiddleware(LangChainToolRetryMiddleware):
+    """Avoid replaying a research batch that may already have persisted partial results."""
+
+    def __init__(self, *, batch_tool_name: str) -> None:
+        super().__init__(max_retries=3, backoff_factor=2.0, initial_delay=1.0)
+        self.batch_tool_name = batch_tool_name
+        self._batch_retry = LangChainToolRetryMiddleware(max_retries=0)
+
+    def wrap_tool_call(self, request, handler):
+        """Return a batch failure after one attempt; retain normal retry for other tools."""
+        name = request.tool.name if request.tool else request.tool_call["name"]
+        if name == self.batch_tool_name:
+            return self._batch_retry.wrap_tool_call(request, handler)
+        return super().wrap_tool_call(request, handler)
+
+    async def awrap_tool_call(self, request, handler):
+        """Return an asynchronous batch failure without replaying successful workers."""
+        name = request.tool.name if request.tool else request.tool_call["name"]
+        if name == self.batch_tool_name:
+            return await self._batch_retry.awrap_tool_call(request, handler)
+        return await super().awrap_tool_call(request, handler)
+
+
 class SourceRegistryMiddleware(AgentMiddleware):
     """Intercepts tool call results to build a registry of actual sources.
 
@@ -1306,7 +1457,24 @@ class SourceRegistryMiddleware(AgentMiddleware):
         sources = self.active_registry().all_sources()
         if mode == "full" or not self._compact_source_keys:
             return sources
-        compact_sources = [source for source in sources if self._entry_key(source) in self._compact_source_keys]
+        note_files: dict[str, set[str]] = {}
+        for key in self._compact_source_keys:
+            if not key.startswith(("http://", "https://")):
+                filename, _ = _parse_citation_key(key)
+                note_files.setdefault(filename.lower(), set()).add(key.lower())
+
+        compact_sources = []
+        for source in sources:
+            source_key = self._entry_key(source)
+            if source.source_type == "knowledge_layer" and source.citation_key and not source.url:
+                filename, _ = _parse_citation_key(source.citation_key)
+                matched_keys = note_files.get(filename.lower())
+                if matched_keys:
+                    if matched_keys != {source.citation_key.lower()}:
+                        source = replace(source, citation_key=filename)
+                    compact_sources.append(source)
+            elif source_key in self._compact_source_keys:
+                compact_sources.append(source)
         return compact_sources or sources
 
     def get_source_list_text(self, mode: str = "compact") -> str | None:
@@ -1567,11 +1735,11 @@ class ToolResultPruningMiddleware(AgentMiddleware):
         # Find all ToolMessage indices
         tool_indices = [i for i, msg in enumerate(request.messages) if isinstance(msg, ToolMessage)]
 
-        if len(tool_indices) <= self.keep_last_n:
+        if self.keep_last_n > 0 and len(tool_indices) <= self.keep_last_n:
             return await handler(request)
 
         # Indices to truncate: all but the last keep_last_n
-        truncate_indices = set(tool_indices[: -self.keep_last_n])
+        truncate_indices = set(tool_indices[: -self.keep_last_n] if self.keep_last_n else tool_indices)
 
         pruned_messages = []
         for i, msg in enumerate(request.messages):
@@ -1579,14 +1747,7 @@ class ToolResultPruningMiddleware(AgentMiddleware):
                 content = str(msg.content)
                 if len(content) > self.max_chars:
                     truncated_content = content[: self.max_chars] + "\n\n[... truncated ...]"
-                    pruned_messages.append(
-                        ToolMessage(
-                            content=truncated_content,
-                            tool_call_id=msg.tool_call_id,
-                            name=getattr(msg, "name", None),
-                            id=msg.id,
-                        )
-                    )
+                    pruned_messages.append(msg.model_copy(update={"content": truncated_content}))
                 else:
                     pruned_messages.append(msg)
             else:

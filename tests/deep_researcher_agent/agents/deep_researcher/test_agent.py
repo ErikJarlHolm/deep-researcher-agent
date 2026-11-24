@@ -172,6 +172,28 @@ class TestDeepResearcherAgent:
             }
         }
 
+    def test_small_research_notes_fit_in_one_default_file_read(self):
+        query = ResearchQuery.model_validate(self._query_payload())
+        note = ResearchNotes.model_validate(self._structured_notes_response()["structured_response"])
+        note = note.model_copy(update={"findings": note.findings * 12})
+        payload = note.model_dump(mode="json", exclude_none=True)
+        assert len(json.dumps(payload, indent=2, ensure_ascii=False).splitlines()) > 100
+
+        _, content = research_module._research_note_files([query], [note])[0]
+
+        assert b"\n" not in content
+        assert json.loads(content.decode("utf-8")) == payload
+
+    def test_large_research_notes_remain_line_paginated(self):
+        query = ResearchQuery.model_validate(self._query_payload())
+        note = ResearchNotes.model_validate(self._structured_notes_response()["structured_response"])
+        note = note.model_copy(update={"narrative_notes": "x" * (64 * 1024)})
+
+        _, content = research_module._research_note_files([query], [note])[0]
+
+        assert b"\n" in content
+        assert json.loads(content.decode("utf-8")) == note.model_dump(mode="json", exclude_none=True)
+
     def _query_payload(self, query: str = "research query", *, subqueries: list[str] | None = None):
         return {
             "query": query,
@@ -1284,6 +1306,7 @@ class TestDeepResearcherAgent:
         self,
         mock_llm_provider,
         real_tool,
+        caplog,
     ):
         """Failed researchers are surfaced as tool errors without timing out slow workers."""
         from deep_researcher_agent.agents.deep_researcher.agent import DeepResearcherAgent
@@ -1375,7 +1398,10 @@ class TestDeepResearcherAgent:
 
         assert "run_research_batch failed for 1 of 3 researcher worker" in str(exc_info.value)
         assert "researcher worker failed" in str(exc_info.value)
+        assert "input position 2" in str(exc_info.value)
         assert "search backend exploded" not in str(exc_info.value)
+        assert "Researcher batch item failed (error_type=RuntimeError" in caplog.text
+        assert "search backend exploded" not in caplog.text
         assert "timed out" not in str(exc_info.value)
         assert "2 successful researcher worker(s) were registered and persisted under /shared/" in str(exc_info.value)
         assert "resubmit only the failed queries" in str(exc_info.value)

@@ -25,12 +25,14 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import tool
 
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ArtifactHarvestMiddleware
+from deep_researcher_agent.agents.deep_researcher.custom_middleware import ContextAwareModelRetryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FilesystemToolCallGuardMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FinalReportCommitMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FinalReportCommitTracker
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import FinalReportOwnershipGuardMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import RequiredOutputFileMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import RequiredWriterDelegationMiddleware
+from deep_researcher_agent.agents.deep_researcher.custom_middleware import ResearchBatchRetryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import SourceRegistryMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import SourceRoutingGuardMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import SourceRoutingPersistenceMiddleware
@@ -39,6 +41,7 @@ from deep_researcher_agent.agents.deep_researcher.custom_middleware import Struc
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import TodoQuotaMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import TodoSuppressionMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolNameSanitizationMiddleware
+from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolResultPruningMiddleware
 from deep_researcher_agent.agents.deep_researcher.custom_middleware import ToolVisibilityMiddleware
 from deep_researcher_agent.agents.deep_researcher.deepagents_runtime import DeepAgentsRuntime
 from deep_researcher_agent.agents.deep_researcher.deepagents_runtime import DeepResearchSkillsConfig
@@ -48,6 +51,7 @@ from deep_researcher_agent.agents.deep_researcher.factory import build_deep_rese
 from deep_researcher_agent.agents.deep_researcher.factory import build_deep_research_subagents
 from deep_researcher_agent.agents.deep_researcher.factory import build_deep_research_tool_set
 from deep_researcher_agent.agents.deep_researcher.factory import build_researcher_runnable
+from deep_researcher_agent.agents.deep_researcher.factory import build_source_router_middleware
 from deep_researcher_agent.agents.deep_researcher.factory import runtime_visibility_middleware
 from deep_researcher_agent.agents.deep_researcher.factory import skill_filesystem_permissions
 from deep_researcher_agent.agents.deep_researcher.models import DeepResearchAgentState
@@ -105,6 +109,26 @@ def _tool_set_and_middleware() -> tuple[SourceRegistryMiddleware, object, object
 
 def _tool_names(tools) -> list[str]:
     return [tool.name for tool in tools]
+
+
+def test_planner_and_researcher_bound_older_tool_results():
+    _, _, middleware = _tool_set_and_middleware()
+    planner = next(item for item in middleware.planner if isinstance(item, ToolResultPruningMiddleware))
+    researcher = next(item for item in middleware.researcher if isinstance(item, ToolResultPruningMiddleware))
+    assert (planner.keep_last_n, planner.max_chars) == (0, 5000)
+    assert (researcher.keep_last_n, researcher.max_chars) == (1, 1000)
+
+
+def test_all_model_roles_forward_context_overflow_for_recovery():
+    _, _, middleware = _tool_set_and_middleware()
+    stacks = (
+        middleware.planner,
+        middleware.researcher,
+        middleware.writer,
+        middleware.orchestrator,
+        build_source_router_middleware(),
+    )
+    assert all(any(isinstance(item, ContextAwareModelRetryMiddleware) for item in stack) for stack in stacks)
 
 
 def _sanitizer(middleware: list[object]) -> ToolNameSanitizationMiddleware:
@@ -177,6 +201,7 @@ def test_middleware_set_adds_orchestrator_batch_tool_name():
     assert "write_file" in researcher_sanitizer.valid_tool_names
     assert "run_research_batch" not in researcher_sanitizer.valid_tool_names
     assert "run_research_batch" in orchestrator_sanitizer.valid_tool_names
+    assert any(isinstance(item, ResearchBatchRetryMiddleware) for item in middleware_set.orchestrator)
     # The orchestrator allowlist matches the tools it is actually bound to: helper
     # tools, run_research_batch, and filesystem tools — but NOT source tools, which
     # it must reach only via run_research_batch (not call directly).

@@ -52,6 +52,7 @@ class _MissingStructuredResponseError(ValueError):
 
 
 _NOTE_SLUG_MAX_LENGTH = 64
+_MAX_SINGLE_PAGE_RESEARCH_NOTE_BYTES = 64 * 1024
 RESEARCHER_AGENT_NAME = "researcher-agent"
 
 
@@ -156,6 +157,10 @@ async def _run_research_query(
             try:
                 structured = result.get("structured_response") if isinstance(result, dict) else None
                 if structured is None:
+                    logger.warning(
+                        "Researcher worker returned no structured ResearchNotes (query_%s)",
+                        log_content_metadata(query.query),
+                    )
                     raise _MissingStructuredResponseError("researcher worker did not return structured ResearchNotes")
                 note = ResearchNotes.model_validate(structured)
             except _MissingStructuredResponseError:
@@ -189,13 +194,14 @@ def _research_note_path(query: ResearchQuery, note: ResearchNotes, index: int) -
 
 def _research_note_files(queries: list[ResearchQuery], notes: list[ResearchNotes]) -> list[tuple[str, bytes]]:
     """Serialize returned research notes as shared JSON files."""
-    return [
-        (
-            _research_note_path(query, note, index),
-            json.dumps(note.model_dump(mode="json", exclude_none=True), indent=2, ensure_ascii=False).encode("utf-8"),
-        )
-        for index, (query, note) in enumerate(zip(queries, notes, strict=False), start=1)
-    ]
+    note_files = []
+    for index, (query, note) in enumerate(zip(queries, notes, strict=False), start=1):
+        payload = note.model_dump(mode="json", exclude_none=True)
+        content = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if len(content) > _MAX_SINGLE_PAGE_RESEARCH_NOTE_BYTES:
+            content = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+        note_files.append((_research_note_path(query, note, index), content))
+    return note_files
 
 
 def _persist_research_notes(
@@ -250,10 +256,15 @@ async def _run_research_queries(
     successful_queries: list[ResearchQuery] = []
     notes: list[ResearchNotes] = []
     errors: list[str] = []
-    for query, raw_result in zip(queries, raw_results, strict=False):
+    for index, (query, raw_result) in enumerate(zip(queries, raw_results, strict=False), start=1):
         if isinstance(raw_result, BaseException):
+            logger.warning(
+                "Researcher batch item failed (error_type=%s, query_%s)",
+                type(raw_result).__name__,
+                log_content_metadata(query.query),
+            )
             error = str(raw_result) or raw_result.__class__.__name__
-            errors.append(error)
+            errors.append(f"input position {index}: {error}")
         else:
             successful_queries.append(query)
             notes.append(raw_result)
@@ -319,6 +330,12 @@ def build_research_batch_tool(
             callbacks=callbacks,
             max_concurrency=max_research_concurrency,
             original_request=original_request,
+        )
+        logger.info(
+            "Researcher batch completed: requested=%d, notes=%d, failures=%d",
+            len(queries),
+            len(notes),
+            len(errors),
         )
         note_files = _research_note_files(successful_queries, notes)
         batch_note_bytes = sum(len(content) for _, content in note_files)

@@ -96,11 +96,21 @@ sequenceDiagram
 
 The orchestrator serializes dependent stages and tracks progress. It does not
 call source tools directly. Final synthesis is delegated exclusively to the
-writer; source access is delegated to the planner and researcher workers. A
-non-empty file is not sufficient proof of completion: the runtime accepts the
+writer; source access is delegated to the planner and researcher workers. A failed
+research batch is not automatically replayed: successful notes may
+already have been persisted. For worker failures, the error identifies failed
+input positions so the orchestrator can retry only those queries.
+When a tools-disabled structured-output correction still fails, logs record
+the failure category, coarse response shape and length, and available provider
+finish reason and output-token count, without recording the response text.
+
+A non-empty file is not sufficient proof of completion: the runtime accepts the
 report only when its exact UTF-8 bytes match the digest recorded after a
 successful writer mutation in the current run. Missing, stale, or modified
-output fails closed with ``writer_output_not_committed``.
+output fails closed with ``writer_output_not_committed``. After a successful
+commit is verified, any subsequent writer tool call is skipped and the writer
+exits with its completion marker, preventing post-commit tool loops from
+delaying delivery.
 
 The commit proof is intentionally run-local and is not restored from a
 checkpoint after a process restart. The guarantee is one overwrite-capable
@@ -131,7 +141,7 @@ runtime dependencies, not additional agents:
 
 | Boundary | Current implementation |
 | -------- | ---------------------- |
-| Shared research state | The host-side `StateBackend` mounted at `/shared/` stores the source-routing plan, research plan, structured notes, and `/shared/output.md`. DeepAgents graph state separately carries progress todos and file metadata. |
+| Shared research state | The host-side `StateBackend` mounted at `/shared/` stores the source-routing plan, research plan, structured notes, and `/shared/output.md`. Notes that fit the bounded single-read size use compact JSON; larger notes remain line-formatted for pagination. DeepAgents graph state separately carries progress todos and file metadata. |
 | Skill definitions | Built-in skill collections are mounted from the host at `/skills/`. Filesystem permissions expose only the collections assigned to a role and deny writes to the skill tree. |
 | Sandbox workdir | When a sandbox is configured, the default filesystem route and `execute` tool use one provider sandbox per deep-research job. Agents within that job share the provider runtime; separate jobs receive separate sandboxes. |
 | Inference and source tools | LLM calls, source-tool calls, credentials, orchestration state, and `/shared/` remain in the Deep Researcher Agent process. Only generated code and job-workspace files cross the sandbox boundary. |
@@ -184,6 +194,26 @@ The roles use middleware appropriate to their contracts:
 The root graph is constructed with `create_deep_agent`. The reusable
 researcher runnable is constructed separately with `create_agent`, which is
 what lets `run_research_batch` invoke independent queries concurrently.
+
+To reduce model-context pressure, the planner sees a 5,000-character excerpt
+from each longer tool result. Researcher workers retain their latest tool result
+and see a 1,000-character excerpt from each longer older result. Truncation is indicated
+in the model context; source capture receives the original tool results. The
+latest researcher result is not size-limited by this pruning and may still
+exceed a model's context window. Excerpts are prefixes: relevant passages later
+in a result, including lower-ranked hits in a batch, may not be visible to the
+model even when their sources were captured.
+
+Recognized model context-overflow errors bypass ordinary model retries and reach
+DeepAgents' summarization middleware, including the `input_tokens` overflow
+response from OpenAI-compatible servers. Summarization preserves conversation
+history in the agent backend when possible, but summaries can omit evidence and
+cannot guarantee that a single oversized message or the summarization request
+will fit. An accurate model input-token profile helps trigger summarization
+earlier; the token counter is approximate and must leave room for output tokens.
+Offloaded tool results are only visible to the model as a preview until it
+reads the saved file. File reads paginate by line, so exceptionally long single
+lines can also exceed the read limit without offering a useful line offset.
 
 ## State Model
 
@@ -331,7 +361,8 @@ output whose exact UTF-8 bytes match the digest recorded after a successful
 writer mutation in the current run. After one bounded corrective turn, missing,
 stale, or mismatched output fails closed with
 ``writer_output_not_committed``; inline orchestrator messages are not salvaged
-as final reports.
+as final reports. This check also applies when the writer finishes with an empty
+response or ordinary text instead of the expected completion marker.
 
 ``/shared/output.md`` is the sole writer-facing path. When
 ``CompositeBackend`` routes ``/shared/`` through ``StateBackend``, raw graph
@@ -354,7 +385,10 @@ regardless of this setting.
 During planning and research, `SourceRegistryMiddleware` records URLs and
 citation keys returned by allowed source tools in a per-session
 `SourceRegistry`. Research-note source locators identify the compact set
-carried forward for writer-facing citation selection.
+carried forward for writer-facing citation selection. For knowledge-layer
+documents, locators match the registered document even if the page differs;
+when pages differ, the compact list uses the document name without asserting a
+specific page. Document-level identity does not verify a claim or its page.
 
 #### Citation Verification
 
@@ -369,7 +403,9 @@ the source registry using five URL matching strategies:
 
 Unmatched citations are removed and recorded with an audit reason. Knowledge
 layer citations, such as `report.pdf, p.15`, are matched against citation
-keys with lenient page-number comparison.
+keys with lenient page-number comparison. Source-section headings including
+`Sources`, `References`, `Kilder`, and `Referanser` are recognized and
+normalized before verification.
 
 #### Report Sanitization
 

@@ -779,7 +779,7 @@ register_source_parser(lambda name: "knowledge" in name, _parse_knowledge_layer)
 # Citation parsing and source-section layout normalization
 # ---------------------------------------------------------------------------
 
-_REFERENCE_HEADING_LABEL_PATTERN = r"(?:Sources|References|Reference[^\S\n]+List)"
+_REFERENCE_HEADING_LABEL_PATTERN = r"(?:Sources|References|Reference[^\S\n]+List|Kilder|Referanser)"
 _REFERENCE_HEADING_PATTERN = (
     r"^[^\S\n]*(?:"
     rf"#{{1,3}}[^\S\n]+{_REFERENCE_HEADING_LABEL_PATTERN}[^\S\n]*:?"

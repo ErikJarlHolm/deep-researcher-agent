@@ -31,7 +31,6 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain.agents.middleware import ModelRetryMiddleware
 from langchain.agents.middleware import ToolRetryMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -46,6 +45,7 @@ from deep_researcher_agent.relay import merge_langchain_middleware
 
 from .custom_middleware import RESEARCHER_FINALIZATION_MODEL_CALLS
 from .custom_middleware import ArtifactHarvestMiddleware
+from .custom_middleware import ContextAwareModelRetryMiddleware
 from .custom_middleware import EmptyContentFixMiddleware
 from .custom_middleware import ExecuteTimeoutClampMiddleware
 from .custom_middleware import FilesystemToolCallGuardMiddleware
@@ -55,6 +55,7 @@ from .custom_middleware import FinalReportOwnershipGuardMiddleware
 from .custom_middleware import PlanPersistenceMiddleware
 from .custom_middleware import RequiredOutputFileMiddleware
 from .custom_middleware import RequiredWriterDelegationMiddleware
+from .custom_middleware import ResearchBatchRetryMiddleware
 from .custom_middleware import ResearcherFinalizationMiddleware
 from .custom_middleware import SourceRegistryMiddleware
 from .custom_middleware import SourceRoutingGuardMiddleware
@@ -246,7 +247,7 @@ def build_common_middleware(
         ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),
         source_registry_middleware,
         ToolResultPruningMiddleware(keep_last_n=10, max_chars=2000),
-        ModelRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
+        ContextAwareModelRetryMiddleware(),
     ]
     if artifact_manager is not None:
         middleware.append(ArtifactHarvestMiddleware(artifact_manager))
@@ -277,10 +278,10 @@ def build_orchestrator_middleware(
         EmptyContentFixMiddleware(),
         SourceRoutingGuardMiddleware(enabled=enable_source_router, required_subagent=SOURCE_ROUTER_AGENT),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(valid_tool_names)),
-        ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),
+        ResearchBatchRetryMiddleware(batch_tool_name=research_batch_tool_name),
         source_registry_middleware,
         ToolResultPruningMiddleware(keep_last_n=10, max_chars=2000),
-        ModelRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
+        ContextAwareModelRetryMiddleware(),
     ]
 
 
@@ -290,7 +291,7 @@ def build_source_router_middleware(*, extra_valid_tool_names: Sequence[str] = ()
         EmptyContentFixMiddleware(),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(extra_valid_tool_names)),
         ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),
-        ModelRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
+        ContextAwareModelRetryMiddleware(),
     ]
 
 
@@ -313,8 +314,18 @@ def build_deep_research_middleware_set(
         )
 
     return DeepResearchMiddlewareSet(
-        researcher=common(),
-        planner=common(),
+        researcher=[
+            ToolResultPruningMiddleware(keep_last_n=1, max_chars=1000)
+            if isinstance(middleware, ToolResultPruningMiddleware)
+            else middleware
+            for middleware in common()
+        ],
+        planner=[
+            ToolResultPruningMiddleware(keep_last_n=0, max_chars=5000)
+            if isinstance(middleware, ToolResultPruningMiddleware)
+            else middleware
+            for middleware in common()
+        ],
         writer=common(),
         orchestrator=build_orchestrator_middleware(
             tool_set=tool_set,

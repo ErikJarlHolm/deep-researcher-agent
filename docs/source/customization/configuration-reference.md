@@ -648,6 +648,10 @@ functions:
 | `max_source_tool_batch_size` | `int` | `4` | Maximum concrete inputs accepted by a batch-capable source-tool wrapper in one call. |
 | `resource_limits` | object | See below | Non-disableable per-job request, graph, state, and provider-call ceilings. Values may be reduced but cannot exceed the defaults. |
 
+`max_researcher_model_calls` limits graph turns, not individual provider requests. A normal turn that returns
+unstructured text can make one additional, tools-disabled request to recover structured notes. Provider-level
+retries can also add requests. The reserved finalization turn does not make that text-repair request.
+
 `resource_limits` is enforced in both synchronous and async-job construction:
 
 | Parameter | Default and maximum | Enforcement boundary |

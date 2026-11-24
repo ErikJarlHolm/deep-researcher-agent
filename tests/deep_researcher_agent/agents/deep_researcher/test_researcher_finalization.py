@@ -16,6 +16,7 @@
 """Tests for the researcher model-call budget and its reserved finalization phase."""
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -179,6 +180,17 @@ class _ProseOnForcedTurnFakeChatModel(FakeMessagesListChatModel):
         return ChatResult(generations=[ChatGeneration(message=message)])
 
 
+class _CountingTextFakeChatModel(FakeMessagesListChatModel):
+    calls: int = 0
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        self.calls += 1
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
 def _drive_researcher(agent) -> tuple[dict | None, Exception | None]:
     """Run one researcher worker to completion, tolerating either exit mechanism.
 
@@ -318,6 +330,31 @@ class TestResearcherWorkerTermination:
         assert model.bound_tools[3] == [think.name, RESEARCH_NOTES_TOOL]
         assert model.bound_tools[4] == [RESEARCH_NOTES_TOOL]
 
+    @pytest.mark.asyncio
+    async def test_async_worker_honors_the_model_call_budget(self):
+        agent, model = _researcher_agent(max_model_calls=2)
+
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Batch research invocation.")]})
+
+        assert isinstance(result["structured_response"], ResearchNotes)
+        assert model.bound_tools == [
+            [think.name, RESEARCH_NOTES_TOOL],
+            [think.name, RESEARCH_NOTES_TOOL],
+            [RESEARCH_NOTES_TOOL],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_text_repair_adds_a_provider_call_to_a_research_turn(self):
+        model = _CountingTextFakeChatModel(
+            responses=[AIMessage(content="Not JSON"), AIMessage(content=json.dumps(_notes_payload()))]
+        )
+        agent, _ = _researcher_agent(max_model_calls=1, model=model)
+
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Batch research invocation.")]})
+
+        assert isinstance(result["structured_response"], ResearchNotes)
+        assert model.calls == 2
+
     def test_worker_gets_exactly_one_finalization_turn(self):
         """A model that refuses to finalize is stopped, not given a second finalization prompt."""
         agent, model = _researcher_agent(max_model_calls=4, finalize_when_forced=False)
@@ -416,15 +453,22 @@ class TestResearcherWorkerTermination:
         assert "customer-content-identifier-12345" not in caplog.text
         assert log_content_metadata(sensitive_query) in caplog.text
 
-    def test_a_contract_failure_raises_rather_than_becoming_a_note(self):
+    def test_a_contract_failure_raises_rather_than_becoming_a_note(self, caplog):
         """Only the budget yields a code-built note; anything else stays a per-item failure.
 
         A worker that ends without notes while it still had budget left has broken its contract.
         ``run_research_batch`` surfaces that to the orchestrator with an invitation to resubmit
         the failed queries, which is a retry a fabricated empty note would silently spend.
         """
+        sensitive_query = "customer-content-identifier-12345"
         with pytest.raises(ValueError, match="did not return structured ResearchNotes"):
-            _note_for_worker(lambda: {"messages": [AIMessage(content="I am done.")]})
+            _note_for_worker(
+                lambda: {"messages": [AIMessage(content="I am done.")]},
+                query=_query(sensitive_query),
+            )
+        assert "Researcher worker returned no structured ResearchNotes" in caplog.text
+        assert log_content_metadata(sensitive_query) in caplog.text
+        assert sensitive_query not in caplog.text
 
     def test_a_prose_only_finalization_note_is_not_a_contract_failure(self):
         """The budget path is the one exception, and it is reached by a typed error."""

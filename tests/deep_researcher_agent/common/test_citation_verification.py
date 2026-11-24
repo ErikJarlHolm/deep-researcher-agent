@@ -774,6 +774,27 @@ class TestVerifyCitations:
         assert len(result.valid_citations) == 2
         assert not result.removed_citations
 
+    @pytest.mark.parametrize("heading", ["Kilder", "Referanser"])
+    def test_norwegian_source_section_is_verified_instead_of_synthesized(self, registry, heading):
+        report = (
+            "Supported [1]. Unsupported [2].\n\n"
+            f"## {heading}\n"
+            "[1] Article 2: https://valid.com/article2\n"
+            "[2] Fabricated: https://invalid.example/fake"
+        )
+
+        result = verify_citations(report, registry, reference_sources=registry.all_sources())
+        sanitized = sanitize_report(result.verified_report).sanitized_report
+        final = verify_citations(sanitized, registry)
+
+        assert final.verified_report.count("## Sources") == 1
+        assert "[1] Article 2: https://valid.com/article2" in final.verified_report
+        assert "https://valid.com/article1" not in final.verified_report
+        assert "https://invalid.example/fake" not in final.verified_report
+        assert "Unsupported." in final.verified_report
+        assert len(result.removed_citations) == 1
+        assert len(final.valid_citations) == 1
+
     def test_missing_references_section_strips_unresolved_inline_citations(self, registry):
         report = "Finding one [1]. Missing source [3]. Finding two [2]."
         result = verify_citations(report, registry, reference_sources=registry.all_sources()[:2])

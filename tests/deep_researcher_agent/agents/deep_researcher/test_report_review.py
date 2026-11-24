@@ -97,3 +97,17 @@ async def test_review_propagates_provider_timeout(monkeypatch, notes):
     monkeypatch.setattr(report_review, "ainvoke_with_relay", AsyncMock(side_effect=TimeoutError))
     with pytest.raises(TimeoutError):
         await report_review.review_report(model=MagicMock(), question="Question", report="Report", files=notes)
+
+
+@pytest.mark.asyncio
+async def test_review_accepts_legacy_line_list_notes(monkeypatch, notes):
+    verdict = {"approved": True, "missing_topics": [], "unsupported_claims": []}
+    invoke = AsyncMock(return_value=AIMessage(content=json.dumps(verdict)))
+    monkeypatch.setattr(report_review, "ainvoke_with_relay", invoke)
+    entry = notes["/shared/research_note_01.json"]
+    entry["content"] = entry["content"].splitlines()
+
+    await report_review.review_report(model=MagicMock(), question="Question", report="Report", files=notes)
+
+    payload = json.loads(invoke.await_args.args[1][1].content)
+    assert payload["research_notes"][0]["query_topic"] == "coverage"
