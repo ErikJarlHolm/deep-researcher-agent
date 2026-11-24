@@ -18,6 +18,10 @@ NeMo Agent Toolkit provides the core infrastructure: job tracking, [Dask](https:
 - **Knowledge API** -- manage document collections and trigger ingestion (when a knowledge function is configured)
 - **Event replay** -- reconnect to an in-progress job and replay historical events from any point
 
+For the reconnectable chat WebSocket, an unexpected workflow failure sends a
+generic `error_message` to the connected client without exposing exception
+details. Authentication failures retain their actionable error codes.
+
 ## Async Jobs API
 
 Base path: `/v1/jobs/async`

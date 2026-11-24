@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
 from deep_researcher_api import websocket_reconnect
+from deep_researcher_api.auth.errors import TokenExpiredError
 from deep_researcher_api.auth.middleware import get_current_user
 from deep_researcher_api.auth.request_trace import get_request_trace_tags
 from deep_researcher_api.websocket_reconnect import ReconnectableWebSocketMessageHandler
@@ -749,6 +750,64 @@ async def test_run_workflow_binds_authenticated_user_context(monkeypatch) -> Non
     await handler._run_workflow(payload="hello", conversation_id="conv-1")
 
     assert seen_users == [{"type": "oidc", "sub": "user-1", "skip_clarifier": False}]
+
+
+@pytest.mark.asyncio
+async def test_workflow_failure_sends_sanitized_error_to_connected_client(monkeypatch, caplog) -> None:
+    socket = DummySocket(headers=[(b"host", b"localhost")])
+    handler = ReconnectableWebSocketMessageHandler(
+        socket=socket,
+        session_manager=DummySessionManager(),
+        step_adaptor=DummyStepAdaptor(),
+        worker=DummyWorker(),
+    )
+    handler._conversation_id = "conv-1"
+    registry = WebSocketSessionRegistry()
+    monkeypatch.setattr(websocket_reconnect, "_registry", registry)
+    await registry.set_socket("conv-1", socket)
+
+    async def failing_stream(*_args, **_kwargs):
+        raise RuntimeError("private workflow details")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(websocket_reconnect, "generate_streaming_response", failing_stream)
+
+    await handler._run_workflow(payload="hello", conversation_id="conv-1")
+
+    assert len(socket.sent) == 1
+    assert socket.sent[0]["type"] == "error_message"
+    assert socket.sent[0]["content"]["message"] == "workflow_error"
+    assert "private workflow details" not in str(socket.sent)
+    assert "private workflow details" not in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_preserves_actionable_error(monkeypatch) -> None:
+    socket = DummySocket(headers=[(b"host", b"localhost")])
+    handler = ReconnectableWebSocketMessageHandler(
+        socket=socket,
+        session_manager=DummySessionManager(),
+        step_adaptor=DummyStepAdaptor(),
+        worker=DummyWorker(),
+    )
+    handler._conversation_id = "conv-1"
+    registry = WebSocketSessionRegistry()
+    monkeypatch.setattr(websocket_reconnect, "_registry", registry)
+    await registry.set_socket("conv-1", socket)
+
+    async def failing_stream(*_args, **_kwargs):
+        raise TokenExpiredError("Please sign in again.")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(websocket_reconnect, "generate_streaming_response", failing_stream)
+
+    await handler._run_workflow(payload="hello", conversation_id="conv-1")
+
+    assert len(socket.sent) == 1
+    assert socket.sent[0]["type"] == "error_message"
+    assert socket.sent[0]["content"]["message"] == "token_expired"
+    assert socket.sent[0]["content"]["details"] == "Please sign in again."
 
 
 @pytest.mark.asyncio

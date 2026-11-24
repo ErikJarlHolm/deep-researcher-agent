@@ -365,6 +365,16 @@ class ReconnectableWebSocketMessageHandler(WebSocketMessageHandler):
         """Create a websocket message and send via the registry."""
         message: BaseModel | None = None
         try:
+            if isinstance(data_model, Error) and message_type == WebSocketMessageType.ERROR_MESSAGE:
+                message = await self._message_validator.create_system_response_token_message(
+                    message_type=message_type,
+                    parent_id=self._message_parent_id,
+                    conversation_id=self._conversation_id,
+                    content=data_model,
+                    status=status,
+                )
+                return
+
             if message_type is None:
                 message_type = await self._message_validator.resolve_message_type_by_data(data_model)
 
@@ -525,23 +535,24 @@ class ReconnectableWebSocketMessageHandler(WebSocketMessageHandler):
                     )
                     self._pending_observability_trace = None
             except Exception as exc:
-                if not isinstance(exc, AuthError):
-                    logger.exception("Error running workflow")
-                    return
-
-                logger.warning("Auth error during workflow: %s", exc)
+                if isinstance(exc, AuthError):
+                    logger.warning("Auth error during workflow: %s", exc)
+                    error = Error(code=ErrorTypes.UNKNOWN_ERROR, message=exc.error_code, details=str(exc))
+                else:
+                    logger.error("Error running workflow (error_type=%s)", type(exc).__name__)
+                    error = Error(
+                        code=ErrorTypes.UNKNOWN_ERROR,
+                        message="workflow_error",
+                        details="The workflow could not be completed. Please try again.",
+                    )
                 try:
                     await self.create_websocket_message(
-                        data_model=Error(
-                            code=ErrorTypes.UNKNOWN_ERROR,
-                            message=exc.error_code,
-                            details=str(exc),
-                        ),
+                        data_model=error,
                         message_type=WebSocketMessageType.ERROR_MESSAGE,
                         status=WebSocketMessageStatus.COMPLETE,
                     )
-                except Exception:  # pragma: no cover - socket may already be closed
-                    pass
+                except Exception as send_exc:  # pragma: no cover - socket may already be closed
+                    logger.warning("Failed to send workflow error (error_type=%s)", type(send_exc).__name__)
 
 
 def install_reconnectable_handler() -> None:  # TODO: upstream to NAT
